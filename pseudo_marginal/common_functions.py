@@ -6,9 +6,19 @@
 # Calling libraries:
 from __future__ import division
 get_ipython().magic('matplotlib inline')
-import numpy as np
+import numpy as np, numpy.random as npr
 from scipy.stats import *
 from scipy import signal as sp  #for FFT
+
+def adaptive_resample(weights, particles) :
+    weights /= np.sum(weights)
+    ESS = 1/np.sum(weights**2)
+    n_particles = len(weights)
+    idx_resampled = np.arange(n_particles)
+    if ESS < n_particles/2 :
+        particles = particles[npr.choice(a=n_particles,size=n_particles,p=weights)]
+        weights = np.ones(n_particles)/n_particles
+    return weights, particles 
 
 def compute_acf(X):
     """
