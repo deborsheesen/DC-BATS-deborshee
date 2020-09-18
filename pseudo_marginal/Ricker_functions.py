@@ -58,7 +58,7 @@ def bootstrap_PF_simple(initial, n_particles, theta, Y) :
 def bootstrap_PF(initial, n_particles, theta, Y) :
     T = len(Y)
     r, sigma, phi = theta[:]
-    particles, weights, logNC = np.zeros((T+1,n_particles)), np.ones(n_particles), 0.
+    particles, weights, logNC = np.zeros((T+1,n_particles)), np.ones(n_particles)/n_particles, 0.
     particles[0] = initial 
     
     for t in range(T) :

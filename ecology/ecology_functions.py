@@ -7,29 +7,39 @@ from tqdm import trange
 
 def potential(y, particles, theta) :
     alpha, lmbda = theta[0], theta[1]
-    reg = (alpha + lmbda.dot(particles)).transpose()
-    return np.sum(np.exp((y-1)*reg), (1,2))
+    n_particles = np.shape(particles)[-1]
+    I, J = np.shape(y)
+    reg = np.zeros((J,n_particles,I))
+    for j in range(J) :
+        reg[j] = alpha[j] + lmbda[j].dot(particles.transpose())
+    prob = (1/(1+np.exp(-reg))).transpose()
+    return np.asarray([np.prod((prob[:,i,:]**y)*(1-prob[:,i,:])**(1-y)) for i in range(n_particles)])
 
 def propagate(particles, theta) :
     c, phi, logsigmasq = theta[2], theta[3], theta[4]
-    sigmasq = np.exp(logsigmasq)
-    return c + phi*particles + np.sqrt(sigmasq)*npr.randn(*np.shape(particles)) 
+    sigma = np.exp(logsigmasq/2)
+    return c + phi*particles + sigma*npr.randn(*np.shape(particles)) 
 
-def simulate_data(x_0, T, n_species, theta) :
+def simulate_data(x_0, T, J, theta) :   # I = no. of locations, J = no. of species, K = no. of latent factors
     alpha, lmbda, c, phi, logsigmasq = theta[:]
-    
-    n_locations, n_factors = np.shape(x_0)
-    Y = np.zeros((T,n_locations,n_species))
-    X = np.zeros((T+1,n_locations,n_factors))
+    I, K = np.shape(x_0)
+    Y = np.zeros((T,I,J)).astype(int)
+    X = np.zeros((T+1,I,K))
     X[0] = x_0
 
     for t in range(T) :
         X[t+1] = propagate(X[t], theta)
-        reg = alpha + lmbda.dot(X[t].transpose())
-        probs = 1/(1+np.exp(-reg))
-        Y[t] = npr.binomial(n=1, p=probs).transpose()
+        for j in range(J) :
+            reg = alpha[j] + lmbda[j,:].dot(X[t+1].transpose())
+            probs = 1/(1+np.exp(-reg))
+            Y[t,:,j] = npr.binomial(n=1, p=probs).transpose()
+            #Y[t,:,j] = (reg + npr.randn(*np.shape(reg))).transpose()
     
     return Y, X
+
+#####################################################################################################################
+#####################################      Bootstrap particle filter     ############################################
+#####################################################################################################################
 
 def adaptive_resample(weights, particles) :
     weights /= np.sum(weights)
@@ -43,7 +53,7 @@ def adaptive_resample(weights, particles) :
 
 def bootstrap_PF(x_0, n_particles, theta, Y) :
     T, n_locations, n_species = np.shape(Y)
-    particles, weights, logNC = np.zeros((*np.shape(x_0),n_particles)), np.ones(n_particles), 0.
+    particles, weights, logNC = np.zeros((*np.shape(x_0),n_particles)), np.ones(n_particles)/n_particles, 0.
     for n in range(n_particles) :
         particles[:,:,n] = x_0
     for t in range(T) :
@@ -54,10 +64,15 @@ def bootstrap_PF(x_0, n_particles, theta, Y) :
         weights, particles = adaptive_resample(weights, particles)                
     return logNC
 
+
+#####################################################################################################################
+#####################################      Pseudo-marginal MCMC stuff     ###########################################
+#####################################################################################################################
+
 def initialise(theta_0, n_mcmc) :
     alpha, lmbda, c, phi, logsigmasq = theta_0[:]
     
-    alpha_chain = np.zeros(n_mcmc+1)
+    alpha_chain = np.zeros((n_mcmc+1,*np.shape(alpha)))
     lmbda_chain = np.zeros((n_mcmc+1,*np.shape(lmbda)))
     c_chain = np.zeros(n_mcmc+1)
     phi_chain = np.zeros(n_mcmc+1)
@@ -80,8 +95,10 @@ def propose(theta, scale) :
     alpha, lmbda, c, phi, logsigmasq = theta[:]
     scale_alpha, scale_lmbda, scale_c, scale_phi, scale_logsigmasq = scale[:]
     
-    alpha_proposed = alpha + scale_alpha*npr.randn()
-    lmbda_proposed = lmbda + scale_lmbda*npr.randn(*np.shape(lmbda))
+    alpha_proposed = npr.multivariate_normal(alpha, scale_alpha)
+    #alpha_proposed = alpha + scale_alpha*npr.randn(*np.shape(alpha))
+    lmbda_proposed = npr.multivariate_normal(lmbda.reshape(np.prod(np.shape(lmbda))), scale_lmbda).reshape(*np.shape(lmbda))
+    #lmbda_proposed = lmbda + scale_lmbda*npr.randn(*np.shape(lmbda))
     c_proposed = c + scale_c*npr.randn()
     phi_proposed = phi + scale_phi*npr.randn()
     logsigmasq_proposed = logsigmasq + scale_logsigmasq*npr.randn()
@@ -136,7 +153,8 @@ def push(theta_chain, theta, n) :
     return [alpha_chain, lmbda_chain, c_chain, phi_chain, logsigmasq_chain]
 
 def log_prior(theta) :
-    return 0 
+    alpha, lmbda, c, phi, logsigmasq = theta[:]
+    return np.sum(-1/2*(sum(alpha**2) + sum(lmbda**2) + c**2 + phi**2 + logsigmasq**2))
 
 def pMCMC(x_0, Y, theta_0, n_particles, n_mcmc, scale, power=1, adapt=True, start_adapt=0.2) :
     alpha_chain, lmbda_chain, c_chain, phi_chain, logsigmasq_chain, lls, theta_mu, theta_m2 = initialise(theta_0, n_mcmc)
@@ -147,11 +165,14 @@ def pMCMC(x_0, Y, theta_0, n_particles, n_mcmc, scale, power=1, adapt=True, star
     accepted = 0
     last_jump = 0
     
+    accept_probs = np.zeros(n_mcmc)
+    
     for n in trange(n_mcmc) :
         theta_proposed = propose(theta_current, scale)
         ll_proposed = bootstrap_PF(x_0, n_particles, theta_proposed, Y)
         log_prior_current, log_prior_proposed = log_prior(theta_current), log_prior(theta_proposed) 
         log_accept_prob = power*(ll_proposed-lls[n]) + (log_prior_proposed-log_prior_current)
+        accept_probs[n] = np.exp(log_accept_prob)
         
         if np.log(npr.rand()) < log_accept_prob :
             lls[n+1] = ll_proposed
@@ -162,7 +183,6 @@ def pMCMC(x_0, Y, theta_0, n_particles, n_mcmc, scale, power=1, adapt=True, star
             lls[n+1] = lls[n]
             if n - last_jump > 50 :
                 lls[n+1] = bootstrap_PF(x_0, n_particles, theta_current, Y)
-                
         if adapt :
             theta_mu, theta_m2 = update_moments(theta_mu, theta_m2, theta_current, n+1)
             if n >= int(n_mcmc*start_adapt) : 
@@ -171,5 +191,71 @@ def pMCMC(x_0, Y, theta_0, n_particles, n_mcmc, scale, power=1, adapt=True, star
         theta_chain = push(theta_chain, theta_current, n+1)
 
     print(100*accepted/n_mcmc, "% acceptance rate")
-    return theta_chain, scale
+    return theta_chain, scale, accept_probs
+
+def plot_theta_trajectory(theta_mcmc) :
+    J, K = np.shape(theta_mcmc[1])[1], np.shape(theta_mcmc[1])[2]
+    plt.rcParams['figure.figsize'] = (18, 2.5)
+    titles = [r"$\alpha$", "$c$", r"$\phi$", r"$\log (\sigma^2)$"]
+    for (i,j) in enumerate([0,2,3,4]) :
+        plt.subplot(1,4,i+1)
+        plt.plot(theta_mcmc[j])
+        plt.title(titles[i], fontsize=15)
+        plt.grid(True)
+    plt.show()
+
+    plt.rcParams['figure.figsize'] = (4*K, 1.2*J)
+    for j in range(J) :
+        for k in range(K) :
+            idx = j*K + k + 1
+            plt.subplot(J,K,idx)
+            plt.plot(theta_mcmc[1][:,j,k])
+            plt.grid(True)
+            if j < (J-1) : plt.xticks(alpha=0)
+    plt.subplots_adjust(hspace=0)
+    #plt.suptitle(r"$\lambda$", fontsize=15)
+    plt.show()
+    
+    
+    
+#####################################################################################################################
+#######################################      Block particle filter     ##############################################
+#####################################################################################################################
+
+
+def local_potential(y, particles, theta, location) :
+    alpha, lmbda = theta[0], theta[1]
+    n_particles = np.shape(particles)[0]
+    
+    J = len(y)
+    reg = np.zeros((J,n_particles))
+    for j in range(J) :
+        reg[j] = alpha[j] + lmbda[j].dot(particles.transpose())
+    prob = (1/(1+np.exp(-reg)))
+    return np.asarray([np.prod((prob[:,n]**y)*(1-prob[:,n])**(1-y)) for n in range(n_particles)])
+
+
+def block_pf(Y, x_0, n_particles, theta) : # I = number of locations, K = dimension at each location
+    
+    I, J = np.shape(Y)[1:]
+    K = np.shape(x_0)[-1]
+    particles = np.zeros((T+1,n_particles,I,K))   # I = number of locations, K = dimension at each location
+    particles[0] = x_0
+    weights = np.ones((n_particles,I))/n_particles 
+    
+    for t in trange(T) :
+        # propagation:
+        particles[t+1] = propagate(particles[t], theta)  
+
+        #weighting:
+        for i in range(I) :
+            weights[:,i] = local_potential(Y[t,i], particles[t+1,:,i], theta, location=i)
+            weights[:,i] /= np.sum(weights[:,i])
+            
+        # resampling:
+        for i in range(I) :
+            resampled_idx = npr.choice(a=n_particles, size=n_particles, p=weights[:,i])
+            particles[t+1,:,i] = particles[t+1,resampled_idx,i]
+            
+    return particles, weights
 
