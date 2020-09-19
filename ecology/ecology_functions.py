@@ -5,16 +5,6 @@ from scipy.stats import *
 from tqdm import trange
 
 
-def potential(y, particles, theta) :
-    alpha, lmbda = theta[0], theta[1]
-    n_particles = np.shape(particles)[-1]
-    I, J = np.shape(y)
-    reg = np.zeros((J,n_particles,I))
-    for j in range(J) :
-        reg[j] = alpha[j] + lmbda[j].dot(particles.transpose())
-    prob = (1/(1+np.exp(-reg))).transpose()
-    return np.asarray([np.prod((prob[:,i,:]**y)*(1-prob[:,i,:])**(1-y)) for i in range(n_particles)])
-
 def propagate(particles, theta) :
     c, phi, logsigmasq = theta[2], theta[3], theta[4]
     sigma = np.exp(logsigmasq/2)
@@ -51,8 +41,19 @@ def adaptive_resample(weights, particles) :
         weights = np.ones(n_particles)/n_particles
     return weights, particles 
 
+def potential(y, particles, theta) :
+    alpha, lmbda = theta[0], theta[1]
+    n_particles = np.shape(particles)[-1]
+    I, J = np.shape(y)
+    reg = np.zeros((J,n_particles,I))
+    for j in range(J) :
+        reg[j] = alpha[j] + lmbda[j].dot(particles.transpose())
+    prob = (1/(1+np.exp(-reg))).transpose()
+    return np.asarray([np.prod((prob[:,i,:]**y)*(1-prob[:,i,:])**(1-y)) for i in range(n_particles)])
+
+
 def bootstrap_PF(x_0, n_particles, theta, Y) :
-    T, n_locations, n_species = np.shape(Y)
+    T, I, J = np.shape(Y)
     particles, weights, logNC = np.zeros((*np.shape(x_0),n_particles)), np.ones(n_particles)/n_particles, 0.
     for n in range(n_particles) :
         particles[:,:,n] = x_0
@@ -64,6 +65,66 @@ def bootstrap_PF(x_0, n_particles, theta, Y) :
         weights, particles = adaptive_resample(weights, particles)                
     return logNC
 
+def bootstrap_pf_track(Y, x_0, n_particles, theta) :
+    
+    T, I, J = np.shape(Y)
+    K = np.shape(x_0)[-1]
+    particles = np.zeros((T+1,*np.shape(x_0),n_particles))   # I = number of locations, K = dimension at each location
+    for n in range(n_particles) :
+        particles[0,:,:,n] = x_0
+    weights = np.ones(n_particles)/n_particles 
+    logNC = 0
+    
+    for t in trange(T) :
+        particles[t+1] = propagate(particles[t], theta)
+        incremental_weights = potential(Y[t], particles[t+1], theta)
+        weights = weights*incremental_weights
+        logNC += np.log(np.sum(weights))
+        resampled_idx = npr.choice(a=n_particles, size=n_particles, p=weights/np.sum(weights))
+        part = particles[t+1]
+        particles[t+1] = part[:,:,resampled_idx]
+        weights = np.ones(n_particles)/n_particles
+    return particles, logNC
+
+#####################################################################################################################
+#######################################      Block particle filter     ##############################################
+#####################################################################################################################
+
+
+def local_potential(y, particles, theta) :
+    alpha, lmbda = theta[0], theta[1]
+    n_particles = np.shape(particles)[0]
+    
+    J = len(y)
+    reg = np.zeros((J,n_particles))
+    for j in range(J) :
+        reg[j] = alpha[j] + lmbda[j].dot(particles.transpose())
+    prob = (1/(1+np.exp(-reg)))
+    return np.asarray([np.prod((prob[:,n]**y)*(1-prob[:,n])**(1-y)) for n in range(n_particles)])
+
+# this can be speeded up..
+def block_pf(Y, x_0, n_particles, theta) : # I = number of locations, K = dimension at each location
+    
+    T, I, J = np.shape(Y)
+    K = np.shape(x_0)[-1]
+    particles = np.zeros((T+1,n_particles,I,K))  
+    particles[0] = x_0
+    weights = np.ones((n_particles,I))/n_particles 
+    
+    for t in trange(T) :
+        # propagation:
+        particles[t+1] = propagate(particles[t], theta)  
+
+        #weighting:
+        for i in range(I) :
+            weights[:,i] = local_potential(Y[t,i], particles[t+1,:,i], theta)
+            
+        # resampling:
+        for i in range(I) :
+            resampled_idx = npr.choice(a=n_particles, size=n_particles, p=weights[:,i]/np.sum(weights[:,i]))
+            particles[t+1,:,i] = particles[t+1,resampled_idx,i]
+            
+    return particles, weights
 
 #####################################################################################################################
 #####################################      Pseudo-marginal MCMC stuff     ###########################################
@@ -215,47 +276,4 @@ def plot_theta_trajectory(theta_mcmc) :
     plt.subplots_adjust(hspace=0)
     #plt.suptitle(r"$\lambda$", fontsize=15)
     plt.show()
-    
-    
-    
-#####################################################################################################################
-#######################################      Block particle filter     ##############################################
-#####################################################################################################################
-
-
-def local_potential(y, particles, theta, location) :
-    alpha, lmbda = theta[0], theta[1]
-    n_particles = np.shape(particles)[0]
-    
-    J = len(y)
-    reg = np.zeros((J,n_particles))
-    for j in range(J) :
-        reg[j] = alpha[j] + lmbda[j].dot(particles.transpose())
-    prob = (1/(1+np.exp(-reg)))
-    return np.asarray([np.prod((prob[:,n]**y)*(1-prob[:,n])**(1-y)) for n in range(n_particles)])
-
-
-def block_pf(Y, x_0, n_particles, theta) : # I = number of locations, K = dimension at each location
-    
-    I, J = np.shape(Y)[1:]
-    K = np.shape(x_0)[-1]
-    particles = np.zeros((T+1,n_particles,I,K))   # I = number of locations, K = dimension at each location
-    particles[0] = x_0
-    weights = np.ones((n_particles,I))/n_particles 
-    
-    for t in trange(T) :
-        # propagation:
-        particles[t+1] = propagate(particles[t], theta)  
-
-        #weighting:
-        for i in range(I) :
-            weights[:,i] = local_potential(Y[t,i], particles[t+1,:,i], theta, location=i)
-            weights[:,i] /= np.sum(weights[:,i])
-            
-        # resampling:
-        for i in range(I) :
-            resampled_idx = npr.choice(a=n_particles, size=n_particles, p=weights[:,i])
-            particles[t+1,:,i] = particles[t+1,resampled_idx,i]
-            
-    return particles, weights
 
