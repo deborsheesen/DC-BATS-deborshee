@@ -3,6 +3,7 @@ import numpy as np, time, matplotlib.pyplot as plt, math, pandas, numpy.random a
 from time import time
 from scipy.stats import *
 from tqdm import trange
+from numpy.matlib import repmat
 import scipy
 
 
@@ -68,7 +69,7 @@ def bootstrap_pf_track(Y, x_0, n_particles, theta) :
     weights = np.ones(n_particles)/n_particles 
     logNC = 0
     
-    for t in trange(T) :
+    for t in range(T) :
         particles[t+1] = propagate(particles[t], theta)
         incremental_weights = potential(Y[t], particles[t+1], theta)
         weights = weights*incremental_weights
@@ -178,13 +179,14 @@ def alpha_grad_blockPF(y, theta, propagated_particles, particles) :
     grad[:] = (((y-1).transpose())*np.reshape(alpha, [J,1]))
     return grad
 
-
 def lmbda_grad_blockPF(y, theta, propagated_particles, particles) :
     alpha, lmbda, c, phi, logsigmasq = theta[:]
     n_particles, I, K = np.shape(propagated_particles)
     J = len(alpha)
-    grad = np.zeros((n_particles,J,K))
-    # do something
+    grad = np.zeros((n_particles,J,K,I))
+    for j in range(J) :
+        grad[:,j] = np.transpose(np.reshape(repmat(np.reshape(y[:,j]-1,(I,1)), 1, n_particles), (I,1,n_particles))\
+                  *np.swapaxes(propagated_particles.transpose(),0,1))
     return grad
 
 def c_grad_blockPF(y, theta, propagated_particles, particles) :
@@ -210,6 +212,8 @@ def update_gradient_blockPF(grad, y, propagated_particles, particles, resampled_
     for i in range(I) :
         grad_alpha[:,:,i] = grad_alpha[resampled_idx[:,i],:,i] \
                             + alpha_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,:,i]
+        grad_lmbda[:,:,:,i] = grad_lmbda[resampled_idx[:,i],:,:,i] \
+                            + lmbda_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,:,:,i]
         grad_c[:,i] = grad_c[resampled_idx[:,i],i] \
                       + c_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,i]
         grad_phi[:,i] = grad_phi[resampled_idx[:,i],i] \
@@ -248,7 +252,7 @@ def block_pf(Y, x_0, n_particles, theta, calc_grad=True) : # I = number of locat
         grad = [np.zeros((n_particles,*np.shape(alpha),I)), np.zeros((n_particles,*np.shape(lmbda),I)), \
                 np.zeros((n_particles,I)), np.zeros((n_particles,I)), np.zeros((n_particles,I))]
 
-    for t in trange(T) :
+    for t in range(T) :
         particles[t+1] = propagate(particles[t], theta)  
         for i in range(I) :
             weights[:,i] = local_potential(Y[t,i], particles[t+1,:,i], theta)
@@ -260,7 +264,8 @@ def block_pf(Y, x_0, n_particles, theta, calc_grad=True) : # I = number of locat
             
     if calc_grad :
         grad_est_alpha = np.sum(np.swapaxes(grad[0],1,2)*np.reshape(weights, (*np.shape(weights),1)), (0,1))
-        grad_est_lmbda = np.zeros((J,K))
+        grad_est_lmbda = np.sum(np.swapaxes(np.swapaxes(grad[1],1,3), 2,3)
+                                *np.reshape(weights, (*np.shape(weights),1,1)),(0,1))
         grad_est_c = np.sum(grad[2]*weights)
         grad_est_phi = np.sum(grad[3]*weights)
         grad_est_logsigmasq = np.sum(grad[4]*weights)
