@@ -53,6 +53,7 @@ def potential(y, particles, theta) :
         reg[j] = alpha[j] + lmbda[j].dot(particles.transpose())
     prob = (1/(1+np.exp(-reg))).transpose()
     return np.asarray([np.prod((prob[:,i,:]**y)*(1-prob[:,i,:])**(1-y)) for i in range(n_particles)])
+    # last line can be speeded up
 
 # --------------------------------------------- Track particles ------------------------------------------------- #
 
@@ -226,13 +227,14 @@ def update_gradient_blockPF(grad, y, propagated_particles, particles, resampled_
 
 def local_potential(y, particles, theta) :
     alpha, lmbda = theta[0], theta[1]
-    n_particles = np.shape(particles)[0]
-    J = len(y)
-    reg = np.zeros((J,n_particles))
+    n_particles, I, K = np.shape(particles)
+    J = np.shape(y)[1]
+    reg = np.zeros((J,I,n_particles))
     for j in range(J) :
-        reg[j] = alpha[j] + lmbda[j].dot(particles.transpose())
+        reg[j] = np.sum(alpha[j] + np.reshape(lmbda[j],(K,1,1))*particles.transpose(), 0)
     prob = 1/(1+np.exp(-reg))
-    return np.asarray([np.prod((prob[:,n]**y)*(1-prob[:,n])**(1-y)) for n in range(n_particles)])
+    yy = np.reshape(y.transpose(), (J,I,1))
+    return np.prod((prob**yy)*(1-prob)**(1-yy),0).transpose()
 
 # this can be speeded up..
 def block_pf(Y, x_0, n_particles, theta, calc_grad=True) : # I = number of locations, K = dimension at each location
@@ -247,6 +249,7 @@ def block_pf(Y, x_0, n_particles, theta, calc_grad=True) : # I = number of locat
     weights = np.ones((n_particles,I))/n_particles 
     resampled_idx = np.zeros((n_particles,I)).astype(int)
     alpha, lmbda, c, phi, logsigmasq = theta[:]
+    logNC = 0
 
     if calc_grad : 
         grad = [np.zeros((n_particles,*np.shape(alpha),I)), np.zeros((n_particles,*np.shape(lmbda),I)), \
@@ -254,11 +257,12 @@ def block_pf(Y, x_0, n_particles, theta, calc_grad=True) : # I = number of locat
 
     for t in range(T) :
         particles[t+1] = propagate(particles[t], theta)  
+        weights = local_potential(Y[t], particles[t+1], theta)
+        logNC += np.log(np.sum(np.prod(weights,1))/n_particles)
         for i in range(I) :
-            weights[:,i] = local_potential(Y[t,i], particles[t+1,:,i], theta)
             resampled_idx[:,i] = npr.choice(a=n_particles, size=n_particles, p=weights[:,i]/np.sum(weights[:,i]))
             particles[t+1,:,i] = particles[t+1,resampled_idx[:,i],i]
-            weights[:,i] /= np.sum(weights[:,i])
+        weights = weights/np.sum(weights,0)
         if calc_grad : 
             grad = update_gradient_blockPF(grad, Y[t], particles[t+1], particles[t], resampled_idx, theta)
             
@@ -269,8 +273,9 @@ def block_pf(Y, x_0, n_particles, theta, calc_grad=True) : # I = number of locat
         grad_est_c = np.sum(grad[2]*weights)
         grad_est_phi = np.sum(grad[3]*weights)
         grad_est_logsigmasq = np.sum(grad[4]*weights)
-            
-    return particles, weights, [grad_est_alpha, grad_est_lmbda, grad_est_c, grad_est_phi, grad_est_logsigmasq]
+        grad = [grad_est_alpha, grad_est_lmbda, grad_est_c, grad_est_phi, grad_est_logsigmasq]        
+    
+    return logNC, grad, particles, weights
 
 #####################################################################################################################
 #####################################      Pseudo-marginal MCMC stuff     ###########################################
