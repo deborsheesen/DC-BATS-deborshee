@@ -77,7 +77,7 @@ def bootstrap_pf_track(Y, x_0, n_particles, theta) :
         part = particles[t+1]
         particles[t+1] = part[:,:,resampled_idx]
         weights = np.ones(n_particles)/n_particles
-    return particles, logNC
+    return logNC, particles, weights
 
 # ----------------------------- Functions to calculate gradient using Fisher's identity ----------------------------- #
 
@@ -124,6 +124,15 @@ def update_gradient(grad, y, propagated_particles, particles, resampled_idx, the
     grad_logsigmasq[:] = grad_logsigmasq[resampled_idx] + logsigmasq_grad(y, theta, propagated_particles, particles[:,:,resampled_idx])
     return [grad_alpha, grad_lmbda, grad_c, grad_phi, grad_logsigmasq]
 
+def weigh_grad(grad, weights) :
+    n_particles = len(weights) 
+    grad_est_alpha = np.sum(grad[0]*np.reshape(weights, [n_particles,1]), 0)/np.sum(weights)
+    grad_est_lmbda = np.sum(grad[1]*np.reshape(weights, [n_particles,1,1]), 0)/np.sum(weights)
+    grad_est_c = np.sum(grad[2]*weights)/np.sum(weights)
+    grad_est_phi = np.sum(grad[3]*weights)/np.sum(weights)
+    grad_est_logsigmasq = np.sum(grad[4]*weights)/np.sum(weights)
+    return [grad_est_alpha, grad_est_lmbda, grad_est_c, grad_est_phi, grad_est_logsigmasq]
+
 def bootstrap_PF_grad(x_0, n_particles, theta, Y, calc_grad=True) :
     
     np.random.seed()
@@ -152,34 +161,77 @@ def bootstrap_PF_grad(x_0, n_particles, theta, Y, calc_grad=True) :
         particles = np.copy(propagated_particles)
         
     if calc_grad : 
-        grad_est_alpha = np.sum(grad[0]*np.reshape(weights, [n_particles,1]), 0)/np.sum(weights)
-        grad_est_lmbda = np.sum(grad[1]*np.reshape(weights, [n_particles,1,1]), 0)/np.sum(weights)
-        grad_est_c = np.sum(grad[2]*weights)/np.sum(weights)
-        grad_est_phi = np.sum(grad[3]*weights)/np.sum(weights)
-        grad_est_logsigmasq = np.sum(grad[4]*weights)/np.sum(weights)
-        return logNC, [grad_est_alpha, grad_est_lmbda, grad_est_c, grad_est_phi, grad_est_logsigmasq]
+        return logNC, weigh_grad(grad, weights), particles, weights
     else :
-        return logNC, 0
+        return logNC, 0, particles, weights 
 
 
 #####################################################################################################################
-#######################################      Block particle filter     ##############################################
+#########################################      Block particle filter     ############################################
 #####################################################################################################################
+
+def alpha_grad_blockPF(y, theta, propagated_particles, particles) :
+    alpha, lmbda, c, phi, logsigmasq = theta[:]
+    n_particles, I, K = np.shape(propagated_particles)
+    J = len(alpha)
+    grad = np.zeros((n_particles,J,I))
+    grad[:] = (((y-1).transpose())*np.reshape(alpha, [J,1]))
+    return grad
+
+
+def lmbda_grad_blockPF(y, theta, propagated_particles, particles) :
+    alpha, lmbda, c, phi, logsigmasq = theta[:]
+    n_particles, I, K = np.shape(propagated_particles)
+    J = len(alpha)
+    grad = np.zeros((n_particles,J,K))
+    # do something
+    return grad
+
+def c_grad_blockPF(y, theta, propagated_particles, particles) :
+    alpha, lmbda, c, phi, logsigmasq = theta[:]
+    sigmasq = np.exp(logsigmasq)
+    n_particles, I, K = np.shape(particles)
+    return -1/(sigmasq)*(c*(I*K)**2 + np.sum(phi*particles-propagated_particles,-1))
+
+def phi_grad_blockPF(y, theta, propagated_particles, particles) :
+    alpha, lmbda, c, phi, logsigmasq = theta[:]
+    sigmasq = np.exp(logsigmasq)
+    return -1/(sigmasq)*(phi*np.sum(particles**2 - c*particles + particles*propagated_particles, -1))
+
+def logsigmasq_grad_blockPF(y, theta, propagated_particles, particles) :
+    alpha, lmbda, c, phi, logsigmasq = theta[:]
+    sigmasq = np.exp(logsigmasq)
+    return 1/(2*sigmasq)*np.sum((propagated_particles-(c+phi*particles))**2, -1)
+
+def update_gradient_blockPF(grad, y, propagated_particles, particles, resampled_idx, theta) :
+    grad_alpha, grad_lmbda, grad_c, grad_phi, grad_logsigmasq = grad[:]
+    I = np.shape(grad_alpha)[-1]
+    
+    for i in range(I) :
+        grad_alpha[:,:,i] = grad_alpha[resampled_idx[:,i],:,i] \
+                            + alpha_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,:,i]
+        grad_c[:,i] = grad_c[resampled_idx[:,i],i] \
+                      + c_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,i]
+        grad_phi[:,i] = grad_phi[resampled_idx[:,i],i] \
+                        + phi_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,i]
+        grad_logsigmasq[:,i] = grad_logsigmasq[resampled_idx[:,i],i] \
+                               + logsigmasq_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,i]
+    
+    return [grad_alpha, grad_lmbda, grad_c, grad_phi, grad_logsigmasq]
 
 
 def local_potential(y, particles, theta) :
     alpha, lmbda = theta[0], theta[1]
     n_particles = np.shape(particles)[0]
-    
     J = len(y)
     reg = np.zeros((J,n_particles))
     for j in range(J) :
         reg[j] = alpha[j] + lmbda[j].dot(particles.transpose())
-    prob = (1/(1+np.exp(-reg)))
+    prob = 1/(1+np.exp(-reg))
     return np.asarray([np.prod((prob[:,n]**y)*(1-prob[:,n])**(1-y)) for n in range(n_particles)])
 
 # this can be speeded up..
-def block_pf(Y, x_0, n_particles, theta) : # I = number of locations, K = dimension at each location
+def block_pf(Y, x_0, n_particles, theta, calc_grad=True) : # I = number of locations, K = dimension at each location
     
     np.random.seed()
     scipy.random.seed()
@@ -189,21 +241,31 @@ def block_pf(Y, x_0, n_particles, theta) : # I = number of locations, K = dimens
     particles = np.zeros((T+1,n_particles,I,K))  
     particles[0] = x_0
     weights = np.ones((n_particles,I))/n_particles 
-    
-    for t in trange(T) :
-        # propagation:
-        particles[t+1] = propagate(particles[t], theta)  
+    resampled_idx = np.zeros((n_particles,I)).astype(int)
+    alpha, lmbda, c, phi, logsigmasq = theta[:]
 
-        #weighting:
+    if calc_grad : 
+        grad = [np.zeros((n_particles,*np.shape(alpha),I)), np.zeros((n_particles,*np.shape(lmbda),I)), \
+                np.zeros((n_particles,I)), np.zeros((n_particles,I)), np.zeros((n_particles,I))]
+
+    for t in trange(T) :
+        particles[t+1] = propagate(particles[t], theta)  
         for i in range(I) :
             weights[:,i] = local_potential(Y[t,i], particles[t+1,:,i], theta)
+            resampled_idx[:,i] = npr.choice(a=n_particles, size=n_particles, p=weights[:,i]/np.sum(weights[:,i]))
+            particles[t+1,:,i] = particles[t+1,resampled_idx[:,i],i]
+            weights[:,i] /= np.sum(weights[:,i])
+        if calc_grad : 
+            grad = update_gradient_blockPF(grad, Y[t], particles[t+1], particles[t], resampled_idx, theta)
             
-        # resampling:
-        for i in range(I) :
-            resampled_idx = npr.choice(a=n_particles, size=n_particles, p=weights[:,i]/np.sum(weights[:,i]))
-            particles[t+1,:,i] = particles[t+1,resampled_idx,i]
+    if calc_grad :
+        grad_est_alpha = np.sum(np.swapaxes(grad[0],1,2)*np.reshape(weights, (*np.shape(weights),1)), (0,1))
+        grad_est_lmbda = np.zeros((J,K))
+        grad_est_c = np.sum(grad[2]*weights)
+        grad_est_phi = np.sum(grad[3]*weights)
+        grad_est_logsigmasq = np.sum(grad[4]*weights)
             
-    return particles, weights
+    return particles, weights, [grad_est_alpha, grad_est_lmbda, grad_est_c, grad_est_phi, grad_est_logsigmasq]
 
 #####################################################################################################################
 #####################################      Pseudo-marginal MCMC stuff     ###########################################
