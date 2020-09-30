@@ -52,8 +52,7 @@ def potential(y, particles, theta) :
     for j in range(J) :
         reg[j] = alpha[j] + lmbda[j].dot(particles.transpose())
     prob = (1/(1+np.exp(-reg))).transpose()
-    return np.asarray([np.prod((prob[:,i,:]**y)*(1-prob[:,i,:])**(1-y)) for i in range(n_particles)])
-    # last line can be speeded up
+    return np.prod(np.swapaxes(prob,1,2)**np.reshape(y, (I,J,1))*(1-np.swapaxes(prob,1,2))**(1-np.reshape(y, (I,J,1))), (0,1))
 
 # --------------------------------------------- Track particles ------------------------------------------------- #
 
@@ -258,9 +257,11 @@ def block_pf(Y, x_0, n_particles, theta, calc_grad=True) : # I = number of locat
     for t in range(T) :
         particles[t+1] = propagate(particles[t], theta)  
         weights = local_potential(Y[t], particles[t+1], theta)
+        weights = weights/np.sum(weights,0)
         logNC += np.log(np.sum(np.prod(weights,1))/n_particles)
+        # resampled_idx = (weights.cumsum(0) > npr.rand(n_particles,weights.shape[1])[:,None]).argmax(1) #this is actually slower
         for i in range(I) :
-            resampled_idx[:,i] = npr.choice(a=n_particles, size=n_particles, p=weights[:,i]/np.sum(weights[:,i]))
+            resampled_idx[:,i] = npr.choice(a=n_particles, size=n_particles, p=weights[:,i])
             particles[t+1,:,i] = particles[t+1,resampled_idx[:,i],i]
         weights = weights/np.sum(weights,0)
         if calc_grad : 
@@ -274,8 +275,9 @@ def block_pf(Y, x_0, n_particles, theta, calc_grad=True) : # I = number of locat
         grad_est_phi = np.sum(grad[3]*weights)
         grad_est_logsigmasq = np.sum(grad[4]*weights)
         grad = [grad_est_alpha, grad_est_lmbda, grad_est_c, grad_est_phi, grad_est_logsigmasq]        
-    
-    return logNC, grad, particles, weights
+        return logNC, grad, particles, weights
+    else :
+        return logNC, 0, particles, weights
 
 #####################################################################################################################
 #####################################      Pseudo-marginal MCMC stuff     ###########################################
