@@ -88,7 +88,7 @@ def alpha_grad(y, theta, propagated_particles, particles) :
     n_particles = np.shape(propagated_particles)[-1]
     J = len(alpha)
     grad = np.zeros((n_particles,J))
-    grad[:] = np.sum((((y-1).transpose())*np.reshape(alpha, [J,1])),1)
+    grad[:] = np.sum(y-1,0)
     return grad
 
 def lmbda_grad(y, theta, propagated_particles, particles) :
@@ -96,8 +96,8 @@ def lmbda_grad(y, theta, propagated_particles, particles) :
     I, K, n_particles = np.shape(propagated_particles)
     J = len(alpha)
     grad = np.zeros((n_particles,J,K))
-    for n in range(n_particles) :
-        grad[n] = np.matmul((y-1).transpose(), propagated_particles[:,:,n])
+    for j in range(J) :
+        grad[:,j] = np.sum(np.reshape(y[:,j]-1,[I,1,1])*propagated_particles,0).transpose()
     return grad
 
 def c_grad(y, theta, propagated_particles, particles) :
@@ -176,7 +176,7 @@ def alpha_grad_blockPF(y, theta, propagated_particles, particles) :
     n_particles, I, K = np.shape(propagated_particles)
     J = len(alpha)
     grad = np.zeros((n_particles,J,I))
-    grad[:] = (((y-1).transpose())*np.reshape(alpha, [J,1]))
+    grad[:] = (y-1).transpose()
     return grad
 
 def lmbda_grad_blockPF(y, theta, propagated_particles, particles) :
@@ -209,17 +209,17 @@ def update_gradient_blockPF(grad, y, propagated_particles, particles, resampled_
     grad_alpha, grad_lmbda, grad_c, grad_phi, grad_logsigmasq = grad[:]
     I = np.shape(grad_alpha)[-1]
     
-    for i in range(I) :
+    for i in range(I) : # this loop is slow..
         grad_alpha[:,:,i] = grad_alpha[resampled_idx[:,i],:,i] \
                             + alpha_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,:,i]
         grad_lmbda[:,:,:,i] = grad_lmbda[resampled_idx[:,i],:,:,i] \
                             + lmbda_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,:,:,i]
-        grad_c[:,i] = grad_c[resampled_idx[:,i],i] \
-                      + c_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,i]
-        grad_phi[:,i] = grad_phi[resampled_idx[:,i],i] \
-                        + phi_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,i]
-        grad_logsigmasq[:,i] = grad_logsigmasq[resampled_idx[:,i],i] \
-                               + logsigmasq_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,i]
+        #grad_c[:,i] = grad_c[resampled_idx[:,i],i] \
+        #              + c_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,i]
+        #grad_phi[:,i] = grad_phi[resampled_idx[:,i],i] \
+        #                + phi_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,i]
+        #grad_logsigmasq[:,i] = grad_logsigmasq[resampled_idx[:,i],i] \
+        #                       + logsigmasq_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,i]
     
     return [grad_alpha, grad_lmbda, grad_c, grad_phi, grad_logsigmasq]
 
