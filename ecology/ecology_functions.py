@@ -230,9 +230,11 @@ def local_potential(y, particles, theta) :
     alpha, lmbda, c, phi, logsigmasq = theta[:]
     n_particles, I, K = np.shape(particles)
     J = np.shape(y)[1]
-    reg = np.zeros((J,I,n_particles))
-    for j in range(J) :
-        reg[j] = alpha[j] + np.sum(np.reshape(lmbda[j],(K,1,1))*particles.transpose(), 0)
+    #reg = np.zeros((J,I,n_particles))
+    #for j in range(J) :
+    #    reg[j] = alpha[j] + np.sum(np.reshape(lmbda[j],(K,1,1))*particles.transpose(), 0)
+    reg = np.reshape(alpha, [J,1,1]) + np.swapaxes(np.sum(np.reshape(lmbda.transpose(), [K,1,J,1]) * \
+                     np.reshape(particles.transpose(), [K,I,1,n_particles]),0), 0,1)
     prob = 1/(1+np.exp(-reg))
     yy = np.reshape(y.transpose(), (J,I,1))
     return np.prod((prob**yy)*(1-prob)**(1-yy),0).transpose()
