@@ -46,11 +46,12 @@ def adaptive_resample(weights, particles) :
 
 def potential(y, particles, theta) :
     alpha, lmbda, c, phi, logsigmasq = theta[:]
-    n_particles = np.shape(particles)[-1]
-    I, J = np.shape(y)
-    reg = np.zeros((J,n_particles,I))
-    for j in range(J) :
-        reg[j] = alpha[j] + lmbda[j].dot(particles.transpose())
+    I, K, n_particles = np.shape(particles)
+    J = np.shape(y)[-1]
+    #reg = np.zeros((J,n_particles,I))
+    #for j in range(J) :
+        #reg[j] = alpha[j] + lmbda[j].dot(particles.transpose())
+    reg = np.swapaxes(np.reshape(alpha, [J,1,1]) + np.sum(np.reshape(particles, [1,I,K,n_particles])*np.reshape(lmbda,[J,1,K,1]),2),1,2)
     prob = (1/(1+np.exp(-reg))).transpose()
     return np.prod(np.swapaxes(prob,1,2)**np.reshape(y, (I,J,1))*(1-np.swapaxes(prob,1,2))**(1-np.reshape(y, (I,J,1))), (0,1))
 
@@ -207,7 +208,7 @@ def logsigmasq_grad_blockPF(y, theta, propagated_particles, particles) :
     sigmasq = np.exp(logsigmasq)
     return 1/(2*sigmasq)*np.sum((propagated_particles-(c+phi*particles))**2, -1)
 
-def update_gradient_blockPF(grad, y, propagated_particles, particles, resampled_idx, theta) :
+def update_gradient_blockPF_old(grad, y, propagated_particles, particles, resampled_idx, theta) :
     grad_alpha, grad_lmbda, grad_c, grad_phi, grad_logsigmasq = grad[:]
     I = np.shape(grad_alpha)[-1]
     
@@ -225,6 +226,27 @@ def update_gradient_blockPF(grad, y, propagated_particles, particles, resampled_
     
     return [grad_alpha, grad_lmbda, grad_c, grad_phi, grad_logsigmasq]
 
+
+def update_gradient_blockPF(grad, y, propagated_particles, particles, resampled_idx, theta) :
+    grad_alpha, grad_lmbda, grad_c, grad_phi, grad_logsigmasq = grad[:]
+    n_particles, I, K = np.shape(particles)
+    resampled_particles = np.zeros((n_particles,I,K))
+    for i in range(I) :
+        resampled_particles[:,i] = particles[resampled_idx[:,i],i]
+    alpha_grad = alpha_grad_blockPF(y, theta, propagated_particles, resampled_particles)
+    lmbda_grad = lmbda_grad_blockPF(y, theta, propagated_particles, resampled_particles)
+    c_grad = c_grad_blockPF(y, theta, propagated_particles, resampled_particles)
+    phi_grad = phi_grad_blockPF(y, theta, propagated_particles, resampled_particles)
+    logsigmasq_grad = logsigmasq_grad_blockPF(y, theta, propagated_particles, resampled_particles)
+    
+    for i in range(I) : # this loop is slow..
+        grad_alpha[:,:,i] = grad_alpha[resampled_idx[:,i],:,i] + alpha_grad[:,:,i]
+        grad_lmbda[:,:,:,i] = grad_lmbda[resampled_idx[:,i],:,:,i] + lmbda_grad[:,:,:,i]
+        grad_c[:,i] = grad_c[resampled_idx[:,i],i] + c_grad[:,i]
+        grad_phi[:,i] = grad_phi[resampled_idx[:,i],i] + phi_grad[:,i]
+        grad_logsigmasq[:,i] = grad_logsigmasq[resampled_idx[:,i],i] + logsigmasq_grad[:,i]
+    
+    return [grad_alpha, grad_lmbda, grad_c, grad_phi, grad_logsigmasq]
 
 def local_potential(y, particles, theta) :
     alpha, lmbda, c, phi, logsigmasq = theta[:]
