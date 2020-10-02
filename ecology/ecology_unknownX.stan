@@ -7,6 +7,7 @@ data
     int<lower=0,upper=1> y[T,I,J];
     matrix[I,K] x_0;
     real<lower=0> pr_sigma;
+    real<lower=0> power;
 }
 parameters 
 {
@@ -20,21 +21,21 @@ parameters
 
 model 
 {
-    c ~ normal(0,pr_sigma);
-    phi ~ normal(0,pr_sigma);
-    alpha ~ normal(0,pr_sigma);
-    logsigmasq ~ normal(0,5*pr_sigma);
+    target += normal_lpdf(c | 0, pr_sigma);
+    target += normal_lpdf(phi | 0, pr_sigma);
+    target += normal_lpdf(logsigmasq | 0, 5*pr_sigma);
+    target += normal_lpdf(alpha | 0, pr_sigma);
     for (j in 1:J) 
     {
-        lambda[j] ~ normal(0,pr_sigma);
+        target += normal_lpdf(lambda[j] | 0, pr_sigma);
     }
     
     for (i in 1:I) 
     {
-        X[1][i,:] ~ normal(c + phi*x_0[i,:], sqrt(exp(logsigmasq)));
+        target += normal_lpdf(X[1][i,:] | c + phi*x_0[i,:], exp(logsigmasq/2));
         for (t in 2:T) 
         {
-            X[t][i,:] ~ normal(c + phi*X[t-1][i,:], exp(logsigmasq/2));
+            target += normal_lpdf(X[t][i,:] | c + phi*X[t-1][i,:], exp(logsigmasq/2));
         }
     }
     
@@ -44,7 +45,8 @@ model
         {
             for (j in 1:J)
             {
-                y[t,i,j] ~ bernoulli_logit(alpha[j] + dot_product(lambda[j],X[t][i,:]));
+                target += power*bernoulli_logit_lpmf(y[t,i,j] | alpha[j] + dot_product(lambda[j],X[t][i,:]));
+                // y[t,i,j] ~ bernoulli_logit(alpha[j] + dot_product(lambda[j],X[t][i,:]));
             }
         }
     }

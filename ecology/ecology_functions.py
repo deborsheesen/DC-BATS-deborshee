@@ -147,20 +147,22 @@ def bootstrap_PF_grad(x_0, n_particles, theta, Y, calc_grad=True) :
     T, I, J = np.shape(Y)
     I, K = np.shape(x_0)
     particles, weights, logNC = np.zeros((I,K,n_particles)), np.ones(n_particles)/n_particles, 0.
-    for n in range(n_particles) :
-        particles[:,:,n] = x_0
+    for n in range(n_particles) : particles[:,:,n] = x_0
     for t in range(T) :
-        resampled_idx = npr.choice(a=n_particles,size=n_particles,p=weights)
-        propagated_particles = propagate(particles[:,:,resampled_idx], theta)
-        incremental_weights = potential(Y[t], propagated_particles, theta)
-        weights = weights*incremental_weights
-        logNC += np.log(np.sum(weights))
-        weights /= np.sum(weights) 
+        resampled_idx = npr.choice(a=n_particles, size=n_particles, p=weights/np.sum(weights))
+        resampled_particles = particles[:,:,resampled_idx]
+        propagated_particles = propagate(resampled_particles, theta)
+        #incremental_weights = potential(Y[t], propagated_particles, theta)
+        #weights = weights*incremental_weights
+        weights = potential(Y[t], propagated_particles, theta)
+        logNC += np.log(np.mean(weights))
         
         if calc_grad : 
             grad = update_gradient(grad, Y[t], propagated_particles, particles, resampled_idx, theta)
         particles = np.copy(propagated_particles)
-        
+    
+    weights /= np.sum(weights) # normalise weights at the end
+    
     if calc_grad : 
         return logNC, weigh_grad(grad, weights), particles, weights
     else :
@@ -214,23 +216,23 @@ def update_gradient_blockPF(grad, y, propagated_particles, particles, resampled_
                             + alpha_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,:,i]
         grad_lmbda[:,:,:,i] = grad_lmbda[resampled_idx[:,i],:,:,i] \
                             + lmbda_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,:,:,i]
-        #grad_c[:,i] = grad_c[resampled_idx[:,i],i] \
-        #              + c_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,i]
-        #grad_phi[:,i] = grad_phi[resampled_idx[:,i],i] \
-        #                + phi_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,i]
-        #grad_logsigmasq[:,i] = grad_logsigmasq[resampled_idx[:,i],i] \
-        #                       + logsigmasq_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,i]
+        grad_c[:,i] = grad_c[resampled_idx[:,i],i] \
+                      + c_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,i]
+        grad_phi[:,i] = grad_phi[resampled_idx[:,i],i] \
+                        + phi_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,i]
+        grad_logsigmasq[:,i] = grad_logsigmasq[resampled_idx[:,i],i] \
+                               + logsigmasq_grad_blockPF(y, theta, propagated_particles, particles[resampled_idx[:,i]])[:,i]
     
     return [grad_alpha, grad_lmbda, grad_c, grad_phi, grad_logsigmasq]
 
 
 def local_potential(y, particles, theta) :
-    alpha, lmbda = theta[0], theta[1]
+    alpha, lmbda, c, phi, logsigmasq = theta[:]
     n_particles, I, K = np.shape(particles)
     J = np.shape(y)[1]
     reg = np.zeros((J,I,n_particles))
     for j in range(J) :
-        reg[j] = np.sum(alpha[j] + np.reshape(lmbda[j],(K,1,1))*particles.transpose(), 0)
+        reg[j] = alpha[j] + np.sum(np.reshape(lmbda[j],(K,1,1))*particles.transpose(), 0)
     prob = 1/(1+np.exp(-reg))
     yy = np.reshape(y.transpose(), (J,I,1))
     return np.prod((prob**yy)*(1-prob)**(1-yy),0).transpose()
@@ -244,8 +246,9 @@ def block_pf(Y, x_0, n_particles, theta, calc_grad=True) : # I = number of locat
     T, I, J = np.shape(Y)
     K = np.shape(x_0)[-1]
     particles = np.zeros((T+1,n_particles,I,K))  
+    resampled_particles = np.zeros((n_particles,I,K))  
     particles[0] = x_0
-    weights = np.ones((n_particles,I))/n_particles 
+    local_weights = np.ones((n_particles,I))/n_particles 
     resampled_idx = np.zeros((n_particles,I)).astype(int)
     alpha, lmbda, c, phi, logsigmasq = theta[:]
     logNC = 0
@@ -255,29 +258,31 @@ def block_pf(Y, x_0, n_particles, theta, calc_grad=True) : # I = number of locat
                 np.zeros((n_particles,I)), np.zeros((n_particles,I)), np.zeros((n_particles,I))]
 
     for t in range(T) :
-        particles[t+1] = propagate(particles[t], theta)  
-        weights = local_potential(Y[t], particles[t+1], theta)
-        weights = weights/np.sum(weights,0)
-        logNC += np.log(np.sum(np.prod(weights,1))/n_particles)
         # resampled_idx = (weights.cumsum(0) > npr.rand(n_particles,weights.shape[1])[:,None]).argmax(1) #this is actually slower
         for i in range(I) :
-            resampled_idx[:,i] = npr.choice(a=n_particles, size=n_particles, p=weights[:,i])
-            particles[t+1,:,i] = particles[t+1,resampled_idx[:,i],i]
-        weights = weights/np.sum(weights,0)
+            resampled_idx[:,i] = npr.choice(a=n_particles, size=n_particles, p=local_weights[:,i]/np.sum(local_weights[:,i]))
+            particles[t,:,i] = particles[t,resampled_idx[:,i],i]
+            resampled_particles[:,i] = particles[t,resampled_idx[:,i],i]
+        particles[t+1] = propagate(resampled_particles, theta)  
+        local_weights = local_potential(Y[t], particles[t+1], theta)
+        logNC += np.log(np.mean(np.prod(local_weights,1)))
+        
         if calc_grad : 
             grad = update_gradient_blockPF(grad, Y[t], particles[t+1], particles[t], resampled_idx, theta)
-            
+        
+    local_weights /= np.sum(local_weights,0) # normalise weights at the end 
+    
     if calc_grad :
-        grad_est_alpha = np.sum(np.swapaxes(grad[0],1,2)*np.reshape(weights, (*np.shape(weights),1)), (0,1))
+        grad_est_alpha = np.sum(np.swapaxes(grad[0],1,2)*np.reshape(local_weights, (*np.shape(local_weights),1)), (0,1))
         grad_est_lmbda = np.sum(np.swapaxes(np.swapaxes(grad[1],1,3), 2,3)
-                                *np.reshape(weights, (*np.shape(weights),1,1)),(0,1))
-        grad_est_c = np.sum(grad[2]*weights)
-        grad_est_phi = np.sum(grad[3]*weights)
-        grad_est_logsigmasq = np.sum(grad[4]*weights)
+                                *np.reshape(local_weights, (*np.shape(local_weights),1,1)),(0,1))
+        grad_est_c = np.sum(grad[2]*local_weights)
+        grad_est_phi = np.sum(grad[3]*local_weights)
+        grad_est_logsigmasq = np.sum(grad[4]*local_weights)
         grad = [grad_est_alpha, grad_est_lmbda, grad_est_c, grad_est_phi, grad_est_logsigmasq]        
-        return logNC, grad, particles, weights
+        return logNC, grad, particles, local_weights
     else :
-        return logNC, 0, particles, weights
+        return logNC, 0, particles, local_weights
 
 #####################################################################################################################
 #####################################      Pseudo-marginal MCMC stuff     ###########################################
@@ -434,9 +439,9 @@ def propose_mala(theta, grad, tau) :
     
     alpha_proposed = alpha + tau[0]*grad_alpha + np.sqrt(2*tau[0])*npr.randn(*np.shape(alpha))
     lmbda_proposed = lmbda + tau[1]*grad_lmbda + np.sqrt(2*tau[1])*npr.randn(*np.shape(lmbda))
-    c_proposed = c + tau[2]*grad_c + np.sqrt(2*tau[2])*npr.randn()
-    phi_proposed = phi + tau[3]*grad_phi + np.sqrt(2*tau[3])*npr.randn()
-    logsigmasq_proposed = logsigmasq + tau[4]*grad_logsigmasq + np.sqrt(2*tau[4])*npr.randn()
+    c_proposed = c #+ tau[2]*grad_c + np.sqrt(2*tau[2])*npr.randn()
+    phi_proposed = phi #+ tau[3]*grad_phi + np.sqrt(2*tau[3])*npr.randn()
+    logsigmasq_proposed = logsigmasq #+ tau[4]*grad_logsigmasq + np.sqrt(2*tau[4])*npr.randn()
     
     return [alpha_proposed, lmbda_proposed, c_proposed, phi_proposed, logsigmasq_proposed]
 
@@ -456,7 +461,7 @@ def pMCMC_mala(x_0, Y, theta_0, n_particles, n_mcmc, tau, power=1) :
     theta_chain = [alpha_chain, lmbda_chain, c_chain, phi_chain, logsigmasq_chain]
     
     theta_current = [alpha_chain[0], lmbda_chain[0], c_chain[0], phi_chain[0], logsigmasq_chain[0]]    
-    ll_current, grad_current = bootstrap_PF_grad(x_0, n_particles, theta_current, Y)
+    ll_current, grad_current, _, _ = bootstrap_PF_grad(x_0, n_particles, theta_current, Y)
     accepted = 0
     last_jump = 0
     
@@ -464,7 +469,7 @@ def pMCMC_mala(x_0, Y, theta_0, n_particles, n_mcmc, tau, power=1) :
     
     for n in trange(n_mcmc) :
         theta_proposed = propose_mala(theta_current, grad_current, tau)
-        ll_proposed, grad_proposed = bootstrap_PF_grad(x_0, n_particles, theta_proposed, Y)
+        ll_proposed, grad_proposed, _, _ = bootstrap_PF_grad(x_0, n_particles, theta_proposed, Y)
         
         log_accept_prob = transition_prob_mala(theta_current, theta_proposed, ll_current, ll_proposed, grad_current, grad_proposed, tau, power) 
         accept_probs[n] = np.exp(log_accept_prob)
@@ -477,7 +482,7 @@ def pMCMC_mala(x_0, Y, theta_0, n_particles, n_mcmc, tau, power=1) :
             last_jump = n
         else :
             if n - last_jump > 50 :
-                ll_current, grad_current = bootstrap_PF_grad(x_0, n_particles, theta_current, Y)
+                ll_current, grad_current, _, _ = bootstrap_PF_grad(x_0, n_particles, theta_current, Y)
         
         theta_chain = push(theta_chain, theta_current, n+1)
 
