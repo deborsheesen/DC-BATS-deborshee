@@ -86,10 +86,12 @@ def bootstrap_PF_track(Y, x_0, n_particles, theta) :
 # these have to return vectors
 def alpha_grad(y, theta, propagated_particles, particles) :
     alpha, lmbda, c, phi, logsigmasq = theta[:]
-    n_particles = np.shape(propagated_particles)[-1]
+    I, K, n_particles = np.shape(propagated_particles)
     J = len(alpha)
     grad = np.zeros((n_particles,J))
-    grad[:] = np.sum(y-1,0)
+    reg = np.reshape(alpha,[J,1,1]) + np.sum(np.reshape(lmbda,[J,1,K,1])*np.reshape(particles,[1,I,K,n_particles]),2)
+    prob = np.exp(reg)/(1+np.exp(reg))
+    grad = np.transpose(np.sum(prob - np.reshape(y.transpose(), [J,I,1]),1))
     return grad
 
 def lmbda_grad(y, theta, propagated_particles, particles) :
@@ -179,7 +181,9 @@ def alpha_grad_blockPF(y, theta, propagated_particles, particles) :
     n_particles, I, K = np.shape(propagated_particles)
     J = len(alpha)
     grad = np.zeros((n_particles,J,I))
-    grad[:] = (y-1).transpose()
+    reg = np.reshape(alpha, [J,1,1]) + np.sum(np.reshape(lmbda.transpose(), [K,J,1,1])*np.reshape(propagated_particles.transpose(), [K,1,I,n_particles]),0)
+    prob = np.swapaxes((np.exp(reg)/(1+np.exp(reg))).transpose(),1,2)
+    grad = prob - np.reshape(y.transpose(), [1,J,I])
     return grad
 
 def lmbda_grad_blockPF(y, theta, propagated_particles, particles) :
@@ -372,7 +376,7 @@ def push(theta_chain, theta, n) :
     return [alpha_chain, lmbda_chain, c_chain, phi_chain, logsigmasq_chain]
 
 def log_prior(theta) :
-    return -(1/2)*np.sum([np.sum(theta[i]**2) for i in range(5)])
+    return -(1/2)*np.sum([np.linalg.norm(theta[i])**2 for i in range(5)])
 
 #####################################  ADAPTIVE RANDOM WALK METROPOLIS-HASTINGS  #####################################
 
@@ -399,22 +403,22 @@ def initialise(theta_0, n_mcmc) :
 
     return alpha_chain, lmbda_chain, c_chain, phi_chain, logsigmasq_chain, lls, theta_mu, theta_m2
 
-def propose_rw(theta, scale) :
+def propose_RW(theta, scale) :
     np.random.seed()
     scipy.random.seed()
     
     alpha, lmbda, c, phi, logsigmasq = theta[:]
     scale_alpha, scale_lmbda, scale_c, scale_phi, scale_logsigmasq = scale[:]
     
-    #alpha_proposed = npr.multivariate_normal(alpha, scale_alpha)
-    alpha_proposed = alpha + scale_alpha*npr.randn(*np.shape(alpha))
-    #lmbda_proposed = npr.multivariate_normal(lmbda.reshape(np.prod(np.shape(lmbda))), scale_lmbda).reshape(*np.shape(lmbda))
-    lmbda_proposed = lmbda #+ scale_lmbda*npr.randn(*np.shape(lmbda))
-    c_proposed = c #+ scale_c*npr.randn()
-    phi_proposed = phi #+ scale_phi*npr.randn()
-    logsigmasq_proposed = logsigmasq #+ scale_logsigmasq*npr.randn()
+    #alpha_prop = npr.multivariate_normal(alpha, scale_alpha)
+    alpha_prop = alpha + scale_alpha*npr.randn(*np.shape(alpha))
+    #lmbda_prop = npr.multivariate_normal(lmbda.reshape(np.prod(np.shape(lmbda))), scale_lmbda).reshape(*np.shape(lmbda))
+    lmbda_prop = lmbda #+ scale_lmbda*npr.randn(*np.shape(lmbda))
+    c_prop = c #+ scale_c*npr.randn()
+    phi_prop = phi #+ scale_phi*npr.randn()
+    logsigmasq_prop = logsigmasq #+ scale_logsigmasq*npr.randn()
     
-    return [alpha_proposed, lmbda_proposed, c_proposed, phi_proposed, logsigmasq_proposed]
+    return [alpha_prop, lmbda_prop, c_prop, phi_prop, logsigmasq_prop]
 
 def update_moments(theta_mu, theta_m2, theta_new, n) :
     alpha_mu, lmbda_mu, c_mu, phi_mu, logsigmasq_mu = theta_mu
@@ -452,7 +456,7 @@ def adapt_scale(scale, theta_mu, theta_m2) :
     return [scale_alpha, scale_lmbda, scale_c, scale_phi, scale_logsigmasq]
 
 
-def pMCMC_rw(x_0, Y, theta_0, n_particles, n_mcmc, scale, power=1, adapt=True, start_adapt=0.2) :
+def pMCMC_RW(x_0, Y, theta_0, n_particles, n_mcmc, scale, power=1, adapt=True, start_adapt=0.2) :
     
     np.random.seed()
     scipy.random.seed()
@@ -460,35 +464,35 @@ def pMCMC_rw(x_0, Y, theta_0, n_particles, n_mcmc, scale, power=1, adapt=True, s
     alpha_chain, lmbda_chain, c_chain, phi_chain, logsigmasq_chain, lls, theta_mu, theta_m2 = initialise(theta_0, n_mcmc)
     theta_chain = [alpha_chain, lmbda_chain, c_chain, phi_chain, logsigmasq_chain]
     
-    theta_current = [alpha_chain[0], lmbda_chain[0], c_chain[0], phi_chain[0], logsigmasq_chain[0]]    
-    lls[0] = bootstrap_PF_grad(Y, x_0, n_particles, theta_current, calc_grad=False)[0]
+    theta_curr = [alpha_chain[0], lmbda_chain[0], c_chain[0], phi_chain[0], logsigmasq_chain[0]]    
+    lls[0] = bootstrap_PF_grad(Y, x_0, n_particles, theta_curr, calc_grad=False)[0]
     accepted = 0
     last_jump = 0
     
     accept_probs = np.zeros(n_mcmc)
     
     for n in trange(n_mcmc) :
-        theta_proposed = propose_rw(theta_current, scale)
-        ll_proposed = bootstrap_PF_grad(Y, x_0, n_particles, theta_proposed, calc_grad=False)[0]
-        log_prior_current, log_prior_proposed = log_prior(theta_current), log_prior(theta_proposed) 
-        log_accept_prob = power*(ll_proposed-lls[n]) + (log_prior_proposed-log_prior_current)
+        theta_prop = propose_RW(theta_curr, scale)
+        ll_prop = bootstrap_PF_grad(Y, x_0, n_particles, theta_prop, calc_grad=False)[0]
+        log_prior_curr, log_prior_prop = log_prior(theta_curr), log_prior(theta_prop) 
+        log_accept_prob = power*(ll_prop-lls[n]) + (log_prior_prop-log_prior_curr)
         accept_probs[n] = np.exp(log_accept_prob)
         
         if np.log(npr.rand()) < log_accept_prob :
-            lls[n+1] = ll_proposed
-            theta_current = np.copy(theta_proposed)
+            lls[n+1] = ll_prop
+            theta_curr = np.copy(theta_prop)
             accepted += 1
             last_jump = n
         else :
             lls[n+1] = lls[n]
             if n - last_jump > 50 :
-                lls[n+1] = bootstrap_PF_grad(Y, x_0, n_particles, theta_current, calc_grad=False)[0]
+                lls[n+1] = bootstrap_PF_grad(Y, x_0, n_particles, theta_curr, calc_grad=False)[0]
         if adapt :
-            theta_mu, theta_m2 = update_moments(theta_mu, theta_m2, theta_current, n+1)
+            theta_mu, theta_m2 = update_moments(theta_mu, theta_m2, theta_curr, n+1)
             if n >= int(n_mcmc*start_adapt) : 
                 scale = adapt_scale(scale, theta_mu, theta_m2)
         
-        theta_chain = push(theta_chain, theta_current, n+1)
+        theta_chain = push(theta_chain, theta_curr, n+1)
 
     print(100*accepted/n_mcmc, "% acceptance rate")
     return theta_chain, scale, accept_probs
@@ -499,7 +503,7 @@ def pMCMC_rw(x_0, Y, theta_0, n_particles, n_mcmc, scale, power=1, adapt=True, s
 
 ############################################## Without using autograd ###############################################
 
-def propose_mala(theta, grad, tau, update=None) :
+def propose_MALA(theta, grad, tau, update=None) :
     np.random.seed()
     scipy.random.seed()
     
@@ -508,22 +512,23 @@ def propose_mala(theta, grad, tau, update=None) :
     if update == None :
         update = np.ones(5)
     
-    alpha_proposed = alpha + update[0]*(tau[0]*grad_alpha + np.sqrt(2*tau[0])*npr.randn(*np.shape(alpha)))
-    lmbda_proposed = lmbda + update[1]*(tau[1]*grad_lmbda + np.sqrt(2*tau[1])*npr.randn(*np.shape(lmbda)))
-    c_proposed = c + update[2]*(tau[2]*grad_c + np.sqrt(2*tau[2])*npr.randn())
-    phi_proposed = phi + update[3]*(tau[3]*grad_phi + np.sqrt(2*tau[3])*npr.randn())
-    logsigmasq_proposed = logsigmasq + update[4]*(tau[4]*grad_logsigmasq + np.sqrt(2*tau[4])*npr.randn())
+    alpha_prop = alpha + update[0]*(tau[0]*grad_alpha + np.sqrt(2*tau[0])*npr.randn(*np.shape(alpha)))
+    lmbda_prop = lmbda + update[1]*(tau[1]*grad_lmbda + np.sqrt(2*tau[1])*npr.randn(*np.shape(lmbda)))
+    c_prop = c + update[2]*(tau[2]*grad_c + np.sqrt(2*tau[2])*npr.randn())
+    phi_prop = phi + update[3]*(tau[3]*grad_phi + np.sqrt(2*tau[3])*npr.randn())
+    logsigmasq_prop = logsigmasq + update[4]*(tau[4]*grad_logsigmasq + np.sqrt(2*tau[4])*npr.randn())
     
-    return [alpha_proposed, lmbda_proposed, c_proposed, phi_proposed, logsigmasq_proposed]
+    return [alpha_prop, lmbda_prop, c_prop, phi_prop, logsigmasq_prop]
 
-def transition_prob_mala(theta_current, theta_proposed, ll_current, ll_proposed, grad_current, grad_proposed, tau, power, update) :
-    log_prior_current, log_prior_proposed = log_prior(theta_current), log_prior(theta_proposed) 
-    a = power*(ll_proposed-ll_current) + (log_prior_proposed-log_prior_current)
-    b1 = -np.sum([np.linalg.norm(theta_current[i] - theta_proposed[i] - update[i]*tau[i]*grad_current[i])**2/(4*tau[i]) for i in range(5)])
-    b2 = -np.sum([np.linalg.norm(theta_proposed[i] - theta_current[i] - update[i]*tau[i]*grad_proposed[i])**2/(4*tau[i]) for i in range(5)])
+def transition_prob_MALA(theta_curr, theta_prop, ll_curr, ll_prop, grad_curr, grad_prop, tau, power, update) :
+    log_prior_curr, log_prior_prop = log_prior(theta_curr), log_prior(theta_prop) 
+    a = power*(ll_prop-ll_curr) + (log_prior_prop-log_prior_curr)
+    b1 = -np.sum([np.linalg.norm(theta_curr[i] - theta_prop[i] - update[i]*tau[i]*grad_curr[i])**2/(4*tau[i]) for i in range(5)])
+    b2 = -np.sum([np.linalg.norm(theta_prop[i] - theta_curr[i] - update[i]*tau[i]*grad_prop[i])**2/(4*tau[i]) for i in range(5)])
     return a + b1 - b2
+    #return a - (b1 - b2)
 
-def pMCMC_mala(x_0, Y, theta_0, n_particles, n_mcmc, tau, update=None, power=1) :
+def pMCMC_MALA(x_0, Y, theta_0, n_particles, n_mcmc, tau, update=None, power=1) :
     
     np.random.seed()
     scipy.random.seed()
@@ -531,36 +536,36 @@ def pMCMC_mala(x_0, Y, theta_0, n_particles, n_mcmc, tau, update=None, power=1) 
     alpha_chain, lmbda_chain, c_chain, phi_chain, logsigmasq_chain, lls, theta_mu, theta_m2 = initialise(theta_0, n_mcmc)
     theta_chain = [alpha_chain, lmbda_chain, c_chain, phi_chain, logsigmasq_chain]
     
-    theta_current = [alpha_chain[0], lmbda_chain[0], c_chain[0], phi_chain[0], logsigmasq_chain[0]]    
-    ll_current, grad_current, _, _ = bootstrap_PF_grad(x_0, n_particles, theta_current, Y)
+    theta_curr = [alpha_chain[0], lmbda_chain[0], c_chain[0], phi_chain[0], logsigmasq_chain[0]]    
+    ll_curr, grad_curr = bootstrap_PF_grad(Y, x_0, n_particles, theta_curr, Y)
     accepted = 0
     last_jump = 0
     
     accept_probs = np.zeros(n_mcmc)
     
     for n in trange(n_mcmc) :
-        theta_proposed = propose_mala(theta_current, grad_current, tau, update)
-        ll_proposed, grad_proposed, _, _ = bootstrap_PF_grad(x_0, n_particles, theta_proposed, Y)
+        theta_prop = propose_MALA(theta_curr, grad_curr, tau, update)
+        ll_prop, grad_prop = bootstrap_PF_grad(Y, x_0, n_particles, theta_prop)
         
-        log_accept_prob = transition_prob_mala(theta_current, theta_proposed, ll_current, ll_proposed, grad_current, grad_proposed, tau, power) 
+        log_accept_prob = transition_prob_MALA(theta_curr, theta_prop, ll_curr, ll_prop, grad_curr, grad_prop, tau, power) 
         accept_probs[n] = np.exp(log_accept_prob)
         
         if np.log(npr.rand()) < log_accept_prob :
-            ll_current = np.copy(ll_proposed)
-            theta_current = np.copy(theta_proposed)
-            grad_current = np.copy(grad_proposed)
+            ll_curr = np.copy(ll_prop)
+            theta_curr = np.copy(theta_prop)
+            grad_curr = np.copy(grad_prop)
             accepted += 1
             last_jump = n
         else :
             if n - last_jump > 50 :
-                ll_current, grad_current, _, _ = bootstrap_PF_grad(x_0, n_particles, theta_current, Y)
+                ll_curr, grad_curr = bootstrap_PF_grad(Y, x_0, n_particles, theta_curr)
         
-        theta_chain = push(theta_chain, theta_current, n+1)
+        theta_chain = push(theta_chain, theta_curr, n+1)
 
     print(100*accepted/n_mcmc, "% acceptance rate")
     return theta_chain, accept_probs
 
-def pMCMC_mala_blockPF(Y, x_0, n_particles, theta_0, n_mcmc, tau, update=None, power=1) :
+def pMCMC_MALA_blockPF(Y, x_0, n_particles, theta_0, n_mcmc, tau, update=None, power=1) :
     
     np.random.seed()
     scipy.random.seed()
@@ -568,30 +573,30 @@ def pMCMC_mala_blockPF(Y, x_0, n_particles, theta_0, n_mcmc, tau, update=None, p
     alpha_chain, lmbda_chain, c_chain, phi_chain, logsigmasq_chain, lls, theta_mu, theta_m2 = initialise(theta_0, n_mcmc)
     theta_chain = [alpha_chain, lmbda_chain, c_chain, phi_chain, logsigmasq_chain]
     
-    theta_current = [alpha_chain[0], lmbda_chain[0], c_chain[0], phi_chain[0], logsigmasq_chain[0]]    
-    ll_current, grad_current = block_PF(Y, x_0, n_particles, theta_current, calc_grad=True)
+    theta_curr = [alpha_chain[0], lmbda_chain[0], c_chain[0], phi_chain[0], logsigmasq_chain[0]]    
+    ll_curr, grad_curr = block_PF(Y, x_0, n_particles, theta_curr, calc_grad=True)
     accepted = 0
     last_jump = 0
     
     accept_probs = np.zeros(n_mcmc)
     
     for n in trange(n_mcmc) :
-        theta_proposed = propose_mala(theta_current, grad_current, tau, update)
-        ll_proposed, grad_proposed = block_PF(Y, x_0, n_particles, theta_proposed, calc_grad=True)
-        log_accept_prob = transition_prob_mala(theta_current, theta_proposed, ll_current, ll_proposed, grad_current, grad_proposed, tau, power, update) 
+        theta_prop = propose_MALA(theta_curr, grad_curr, tau, update)
+        ll_prop, grad_prop = block_PF(Y, x_0, n_particles, theta_prop, calc_grad=True)
+        log_accept_prob = transition_prob_MALA(theta_curr, theta_prop, ll_curr, ll_prop, grad_curr, grad_prop, tau, power, update) 
         accept_probs[n] = np.exp(log_accept_prob)
         
         if np.log(npr.rand()) < log_accept_prob :
-            ll_current = np.copy(ll_proposed)
-            theta_current = np.copy(theta_proposed)
-            grad_current = np.copy(grad_proposed)
+            ll_curr = np.copy(ll_prop)
+            theta_curr = np.copy(theta_prop)
+            grad_curr = np.copy(grad_prop)
             accepted += 1
             last_jump = n
         else :
             if n - last_jump > 50 :
-                ll_current, grad_current = block_PF(Y, x_0, n_particles, theta_current, calc_grad=True)
+                ll_curr, grad_curr = block_PF(Y, x_0, n_particles, theta_curr, calc_grad=True)
         
-        theta_chain = push(theta_chain, theta_current, n+1)
+        theta_chain = push(theta_chain, theta_curr, n+1)
 
     print(100*accepted/n_mcmc, "% acceptance rate")
     return theta_chain, accept_probs
