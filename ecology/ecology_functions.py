@@ -88,9 +88,8 @@ def alpha_grad(y, theta, propagated_particles, particles) :
     alpha, lmbda, c, phi, logsigmasq = theta[:]
     I, K, n_particles = np.shape(propagated_particles)
     J = len(alpha)
-    grad = np.zeros((n_particles,J))
-    reg = np.reshape(alpha,[J,1,1]) + np.sum(np.reshape(lmbda,[J,1,K,1])*np.reshape(particles,[1,I,K,n_particles]),2)
-    prob = np.exp(reg)/(1+np.exp(reg))
+    reg = np.reshape(alpha,[J,1,1]) + np.sum(np.reshape(lmbda,[J,1,K,1])*np.reshape(propagated_particles,[1,I,K,n_particles]),2)
+    prob = 1/(1+np.exp(-reg))
     grad = np.transpose(np.sum(prob - np.reshape(y.transpose(), [J,I,1]),1))
     return grad
 
@@ -98,10 +97,10 @@ def lmbda_grad(y, theta, propagated_particles, particles) :
     alpha, lmbda, c, phi, logsigmasq = theta[:]
     I, K, n_particles = np.shape(propagated_particles)
     J = len(alpha)
-    grad = np.zeros((n_particles,J,K))
-    for j in range(J) :
-        grad[:,j] = np.sum(np.reshape(y[:,j]-1,[I,1,1])*propagated_particles,0).transpose()
-    return grad
+    reg = np.reshape(alpha,[J,1,1,1]) + np.reshape(np.sum(np.reshape(lmbda,[J,1,K,1])*np.reshape(propagated_particles,[1,I,K,n_particles]),2), [J,I,1,n_particles])
+    prob = 1/(1+np.exp(-reg))
+    grad = np.sum((prob-np.reshape(y.transpose(),[J,I,1,1]))*np.reshape(propagated_particles, [1,I,K,n_particles]),1)
+    return np.swapaxes(grad.transpose(),1,2)
 
 def c_grad(y, theta, propagated_particles, particles) :
     alpha, lmbda, c, phi, logsigmasq = theta[:]
@@ -109,7 +108,7 @@ def c_grad(y, theta, propagated_particles, particles) :
     I, K, n_particles = np.shape(particles)
     return -1/(sigmasq)*(c*(I*K)**2 + np.sum(phi*particles-propagated_particles, (0,1)))
 
-def phi_grad(y, theta, propagated_particles, particles) :
+def phi_grad(y, theta, propagated_particles, particles) : 
     alpha, lmbda, c, phi, logsigmasq = theta[:]
     sigmasq = np.exp(logsigmasq)
     return -1/(sigmasq)*(phi*np.sum(particles**2 - c*particles + particles*propagated_particles, (0,1)))
@@ -190,11 +189,12 @@ def lmbda_grad_blockPF(y, theta, propagated_particles, particles) :
     alpha, lmbda, c, phi, logsigmasq = theta[:]
     n_particles, I, K = np.shape(propagated_particles)
     J = len(alpha)
-    grad = np.zeros((n_particles,J,K,I))
-    for j in range(J) :
-        grad[:,j] = np.transpose(np.reshape(repmat(np.reshape(y[:,j]-1,(I,1)), 1, n_particles), (I,1,n_particles))\
-                  *np.swapaxes(propagated_particles.transpose(),0,1))
-    return grad
+    reg = np.reshape(alpha, [J,1,1]) + np.sum(np.reshape(lmbda.transpose(), [K,J,1,1])\
+                                          *np.reshape(propagated_particles.transpose(), [K,1,I,n_particles]),0)
+    prob = 1/(1+np.exp(-reg))
+    grad = np.reshape(prob.transpose(), [n_particles,I,1,J])*np.reshape(propagated_particles, [n_particles,I,K,1]) \
+            - np.reshape(y, [1,I,1,J])*np.reshape(propagated_particles, [n_particles,I,K,1]) 
+    return np.swapaxes(grad, 1,3)
 
 def c_grad_blockPF(y, theta, propagated_particles, particles) :
     alpha, lmbda, c, phi, logsigmasq = theta[:]
