@@ -403,7 +403,7 @@ def initialise(theta_0, n_mcmc) :
 
     return alpha_chain, lmbda_chain, c_chain, phi_chain, logsigmasq_chain, lls, theta_mu, theta_m2
 
-def propose_RW(theta, scale) :
+def propose_RW(theta, scale, update) :
     np.random.seed()
     scipy.random.seed()
     
@@ -411,52 +411,24 @@ def propose_RW(theta, scale) :
     scale_alpha, scale_lmbda, scale_c, scale_phi, scale_logsigmasq = scale[:]
     
     #alpha_prop = npr.multivariate_normal(alpha, scale_alpha)
-    alpha_prop = alpha + scale_alpha*npr.randn(*np.shape(alpha))
+    alpha_prop = alpha + update[0]*scale_alpha*npr.randn(*np.shape(alpha))
     #lmbda_prop = npr.multivariate_normal(lmbda.reshape(np.prod(np.shape(lmbda))), scale_lmbda).reshape(*np.shape(lmbda))
-    lmbda_prop = lmbda #+ scale_lmbda*npr.randn(*np.shape(lmbda))
-    c_prop = c #+ scale_c*npr.randn()
-    phi_prop = phi #+ scale_phi*npr.randn()
-    logsigmasq_prop = logsigmasq #+ scale_logsigmasq*npr.randn()
+    lmbda_prop = lmbda + update[1]*scale_lmbda*npr.randn(*np.shape(lmbda))
+    c_prop = c + update[2]*scale_c*npr.randn()
+    phi_prop = phi + update[3]*scale_phi*npr.randn()
+    logsigmasq_prop = logsigmasq + update[4]*scale_logsigmasq*npr.randn()
     
     return [alpha_prop, lmbda_prop, c_prop, phi_prop, logsigmasq_prop]
 
 def update_moments(theta_mu, theta_m2, theta_new, n) :
-    alpha_mu, lmbda_mu, c_mu, phi_mu, logsigmasq_mu = theta_mu
-    alpha_m2, lmbda_m2, c_m2, phi_m2, logsigmasq_m2 = theta_m2
-    alpha_new, lmbda_new, c_new, phi_new, logsigmasq_new = theta_new[:]
-    
-    alpha_mu = (n*alpha_mu + alpha_new)/(n+1)
-    lmbda_mu = (n*lmbda_mu + lmbda_new)/(n+1)
-    c_mu = (n*c_mu + c_new)/(n+1)
-    phi_mu = (n*phi_mu + phi_new)/(n+1)
-    logsigmasq_mu = (n*logsigmasq_mu + logsigmasq_new)/(n+1)
-    
-    alpha_m2 = (n*alpha_m2 + alpha_new**2)/(n+1)
-    lmbda_m2 = (n*lmbda_m2 + lmbda_new**2)/(n+1)
-    c_m2 = (n*c_m2 + c_new**2)/(n+1)
-    phi_m2 = (n*phi_m2 + phi_new**2)/(n+1)
-    logsigmasq_m2 = (n*logsigmasq_m2 + logsigmasq_new**2)/(n+1)
-    
-    theta_mu = [alpha_mu, lmbda_mu, c_mu, phi_mu, logsigmasq_mu]
-    theta_m2 = [alpha_m2, lmbda_m2, c_m2, phi_m2, logsigmasq_m2]
-    
+    theta_mu = [(n*theta_mu[i] + theta_new[i])/(n+1) for i in range(5)]
+    theta_m2 = [(n*theta_m2[i] + theta_new[i]**2)/(n+1) for i in range(5)]
     return theta_mu, theta_m2
 
 def adapt_scale(scale, theta_mu, theta_m2) :
-    scale_alpha, scale_lmbda, scale_c, scale_phi, scale_logsigmasq = scale[:]
-    alpha_mu, lmbda_mu, c_mu, phi_mu, logsigmasq_mu = theta_mu
-    alpha_m2, lmbda_m2, c_m2, phi_m2, logsigmasq_m2 = theta_m2
+    return [0.7*np.sqrt(theta_m2[i]-theta_mu[i]**2) for i in range(5)]
     
-    scale_alpha = np.sqrt(alpha_m2 - alpha_mu**2)*0.7
-    scale_lmbda = np.sqrt(lmbda_m2 - lmbda_mu**2)*0.7
-    scale_c = np.sqrt(c_m2 - c_mu**2)*0.7
-    scale_phi = np.sqrt(phi_m2 - phi_mu**2)*0.7
-    scale_logsigmasq = np.sqrt(logsigmasq_m2 - logsigmasq_mu**2)*0.7
-    
-    return [scale_alpha, scale_lmbda, scale_c, scale_phi, scale_logsigmasq]
-
-
-def pMCMC_RW(x_0, Y, theta_0, n_particles, n_mcmc, scale, power=1, adapt=True, start_adapt=0.2) :
+def pMCMC_RW(x_0, Y, theta_0, n_particles, n_mcmc, scale, update, power=1, adapt=True, start_adapt=0.2) :
     
     np.random.seed()
     scipy.random.seed()
@@ -465,15 +437,15 @@ def pMCMC_RW(x_0, Y, theta_0, n_particles, n_mcmc, scale, power=1, adapt=True, s
     theta_chain = [alpha_chain, lmbda_chain, c_chain, phi_chain, logsigmasq_chain]
     
     theta_curr = [alpha_chain[0], lmbda_chain[0], c_chain[0], phi_chain[0], logsigmasq_chain[0]]    
-    lls[0] = bootstrap_PF_grad(Y, x_0, n_particles, theta_curr, calc_grad=False)[0]
+    lls[0] = block_PF(Y, x_0, n_particles, theta_curr, calc_grad=False)[0]
     accepted = 0
     last_jump = 0
     
     accept_probs = np.zeros(n_mcmc)
     
     for n in trange(n_mcmc) :
-        theta_prop = propose_RW(theta_curr, scale)
-        ll_prop = bootstrap_PF_grad(Y, x_0, n_particles, theta_prop, calc_grad=False)[0]
+        theta_prop = propose_RW(theta_curr, scale, update)
+        ll_prop = block_PF(Y, x_0, n_particles, theta_prop, calc_grad=False)[0]
         log_prior_curr, log_prior_prop = log_prior(theta_curr), log_prior(theta_prop) 
         log_accept_prob = power*(ll_prop-lls[n]) + (log_prior_prop-log_prior_curr)
         accept_probs[n] = np.exp(log_accept_prob)
@@ -486,7 +458,7 @@ def pMCMC_RW(x_0, Y, theta_0, n_particles, n_mcmc, scale, power=1, adapt=True, s
         else :
             lls[n+1] = lls[n]
             if n - last_jump > 50 :
-                lls[n+1] = bootstrap_PF_grad(Y, x_0, n_particles, theta_curr, calc_grad=False)[0]
+                lls[n+1] = block_PF(Y, x_0, n_particles, theta_curr, calc_grad=False)[0]
         if adapt :
             theta_mu, theta_m2 = update_moments(theta_mu, theta_m2, theta_curr, n+1)
             if n >= int(n_mcmc*start_adapt) : 
@@ -526,7 +498,6 @@ def transition_prob_MALA(theta_curr, theta_prop, ll_curr, ll_prop, grad_curr, gr
     b1 = -np.sum([np.linalg.norm(theta_curr[i] - theta_prop[i] - update[i]*tau[i]*grad_curr[i])**2/(4*tau[i]) for i in range(5)])
     b2 = -np.sum([np.linalg.norm(theta_prop[i] - theta_curr[i] - update[i]*tau[i]*grad_prop[i])**2/(4*tau[i]) for i in range(5)])
     return a + b1 - b2
-    #return a - (b1 - b2)
 
 def pMCMC_MALA(x_0, Y, theta_0, n_particles, n_mcmc, tau, update=None, power=1) :
     
