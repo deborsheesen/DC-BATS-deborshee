@@ -356,7 +356,7 @@ def block_PF(Y, x_0, n_particles, theta, calc_grad=True) : # I = number of locat
         grad = [grad_est_alpha, grad_est_lmbda, grad_est_c, grad_est_phi, grad_est_logsigmasq]        
         return logNC, grad
     else :
-        return logNC, 0
+        return logNC
 
 #####################################################################################################################
 ###########################################      PSEUDO MARGINAL MCMC     ###########################################
@@ -410,10 +410,8 @@ def propose_RW(theta, scale, update) :
     alpha, lmbda, c, phi, logsigmasq = theta[:]
     scale_alpha, scale_lmbda, scale_c, scale_phi, scale_logsigmasq = scale[:]
     
-    #alpha_prop = npr.multivariate_normal(alpha, scale_alpha)
-    alpha_prop = alpha + update[0]*scale_alpha*npr.randn(*np.shape(alpha))
-    #lmbda_prop = npr.multivariate_normal(lmbda.reshape(np.prod(np.shape(lmbda))), scale_lmbda).reshape(*np.shape(lmbda))
-    lmbda_prop = lmbda + update[1]*scale_lmbda*npr.randn(*np.shape(lmbda))
+    alpha_prop = npr.multivariate_normal(alpha, scale_alpha)
+    lmbda_prop = npr.multivariate_normal(lmbda.reshape(np.prod(np.shape(lmbda))), scale_lmbda).reshape(*np.shape(lmbda))
     c_prop = c + update[2]*scale_c*npr.randn()
     phi_prop = phi + update[3]*scale_phi*npr.randn()
     logsigmasq_prop = logsigmasq + update[4]*scale_logsigmasq*npr.randn()
@@ -437,7 +435,7 @@ def pMCMC_RW(x_0, Y, theta_0, n_particles, n_mcmc, scale, update, power=1, adapt
     theta_chain = [alpha_chain, lmbda_chain, c_chain, phi_chain, logsigmasq_chain]
     
     theta_curr = [alpha_chain[0], lmbda_chain[0], c_chain[0], phi_chain[0], logsigmasq_chain[0]]    
-    lls[0] = block_PF(Y, x_0, n_particles, theta_curr, calc_grad=False)[0]
+    lls[0] = block_PF(Y, x_0, n_particles, theta_curr, calc_grad=False)
     accepted = 0
     last_jump = 0
     
@@ -445,7 +443,7 @@ def pMCMC_RW(x_0, Y, theta_0, n_particles, n_mcmc, scale, update, power=1, adapt
     
     for n in trange(n_mcmc) :
         theta_prop = propose_RW(theta_curr, scale, update)
-        ll_prop = block_PF(Y, x_0, n_particles, theta_prop, calc_grad=False)[0]
+        ll_prop = block_PF(Y, x_0, n_particles, theta_prop, calc_grad=False)
         log_prior_curr, log_prior_prop = log_prior(theta_curr), log_prior(theta_prop) 
         log_accept_prob = power*(ll_prop-lls[n]) + (log_prior_prop-log_prior_curr)
         accept_probs[n] = np.exp(log_accept_prob)
@@ -458,7 +456,61 @@ def pMCMC_RW(x_0, Y, theta_0, n_particles, n_mcmc, scale, update, power=1, adapt
         else :
             lls[n+1] = lls[n]
             if n - last_jump > 50 :
-                lls[n+1] = block_PF(Y, x_0, n_particles, theta_curr, calc_grad=False)[0]
+                lls[n+1] = block_PF(Y, x_0, n_particles, theta_curr, calc_grad=False)
+        if adapt :
+            theta_mu, theta_m2 = update_moments(theta_mu, theta_m2, theta_curr, n+1)
+            if n >= int(n_mcmc*start_adapt) : 
+                scale = adapt_scale(scale, theta_mu, theta_m2)
+        
+        theta_chain = push(theta_chain, theta_curr, n+1)
+
+    print(100*accepted/n_mcmc, "% acceptance rate")
+    return theta_chain, scale, accept_probs
+
+############################################# MULTIPLE #############################################
+
+def block_PF_mult(Y, x_0, n_particles, theta, m) :
+    global f
+    def f(n_particles) :
+        return block_PF(Y, x_0, n_particles, theta, calc_grad=False)
+    pool = mp.Pool(min(m,10))
+    result = pool.map(f, [n_particles for n_particles in [n_particles]*m])
+    pool.close()
+    gc.collect()
+    return np.asarray(result)
+
+def pMCMC_RW_mult(x_0, Y, theta_0, n_particles, n_mcmc, scale, update, power=1, adapt=True, start_adapt=0.2) :
+    
+    np.random.seed()
+    scipy.random.seed()
+    
+    alpha_chain, lmbda_chain, c_chain, phi_chain, logsigmasq_chain, lls, theta_mu, theta_m2 = initialise(theta_0, n_mcmc)
+    theta_chain = [alpha_chain, lmbda_chain, c_chain, phi_chain, logsigmasq_chain]
+    lls = np.zeros((n_mcmc+1,power))
+    
+    theta_curr = [alpha_chain[0], lmbda_chain[0], c_chain[0], phi_chain[0], logsigmasq_chain[0]]   
+    lls[0] = block_PF_mult(Y, x_0, n_particles, theta_curr, power)
+    accepted = 0
+    last_jump = 0
+    
+    accept_probs = np.zeros(n_mcmc)
+    
+    for n in trange(n_mcmc) :
+        theta_prop = propose_RW(theta_curr, scale, update)
+        ll_prop = block_PF_mult(Y, x_0, n_particles, theta_prop, power)
+        log_prior_curr, log_prior_prop = log_prior(theta_curr), log_prior(theta_prop) 
+        log_accept_prob = np.sum(ll_prop-lls[n]) + (log_prior_prop-log_prior_curr)
+        accept_probs[n] = np.exp(log_accept_prob)
+        
+        if np.log(npr.rand()) < log_accept_prob :
+            lls[n+1] = ll_prop
+            theta_curr = np.copy(theta_prop)
+            accepted += 1
+            last_jump = n
+        else :
+            lls[n+1] = lls[n]
+            if n - last_jump > 50 :
+                lls[n+1] = block_PF_mult(Y, x_0, n_particles, theta_curr, power)
         if adapt :
             theta_mu, theta_m2 = update_moments(theta_mu, theta_m2, theta_curr, n+1)
             if n >= int(n_mcmc*start_adapt) : 
@@ -632,9 +684,110 @@ def get_grads(Y, x_0, n_particles, theta, Tmax, Imax, Jmax, Kmax, rep=500) :
     return alpha_grad, lmbda_grad, c_grad, phi_grad, logsigmasq_grad, logNC
     
     
+
+#####################################################################################################################
+############################################## NON-REVERSIBLE SAMPLERS ##############################################
+#####################################################################################################################
+
+def alpha_func(zeta, deltat) :
+    return np.exp(-zeta*deltat)
+
+def G(sigma, zeta, deltat) :
+    if zeta == 0 :
+        return sigma*np.sqrt(deltat)
+    else :
+        return sigma*np.sqrt((1-np.exp(-2*deltat*zeta))/(2*zeta))
+    
+    
+
+def ODABADO(Y, x_0, n_particles, theta, N, M, deltat, nu, p, zeta, beta=1, sigmaA=0) :
+    
+    alpha, lmbda, c, phi, logsigmasq = theta[:]
+    J, K = np.shape(lmbda)
+    I, K = np.shape(x_0)
+    
+    M_alpha, M_lmbda = M[:]
+    nu_alpha, nu_lmbda = nu[:]
+    p_alpha, p_lmbda = p[:]
+    zeta_alpha, zeta_lmbda = zeta[:]
+    Minv_alpha = np.linalg.inv(M_alpha)
+    Minv_lmbda = np.linalg.inv(M_lmbda)
+    
+    zeta_alpha_vals = np.ones(N+1)
+    zeta_alpha_vals[0] = zeta_alpha
+    zeta_lmbda_vals = np.ones(N+1)
+    zeta_lmbda_vals[0] = zeta_lmbda
+
+    alpha_chain = np.zeros((N+1,J))
+    alpha_chain[0] = alpha
+    lmbda_chain = np.zeros((N+1,J*K))
+    lmbda_chain[0] = lmbda.flatten()
+    
+    for n in trange(N) :
+        zeta_alpha = zeta_alpha_vals[n]
+        zeta_lmbda = zeta_lmbda_vals[n]
+        q_alpha = np.copy(alpha_chain[n])
+        q_lmbda = np.copy(lmbda_chain[n])
+
+        p_alpha = alpha_func(zeta_alpha, deltat/2)*p_alpha + G(sigmaA, zeta_alpha, deltat/2)*npr.randn(J)
+        zeta_alpha = zeta_alpha + deltat/(2*nu_alpha)*(np.linalg.norm(p_alpha)**2 - J/beta)
+        q_alpha = q_alpha + deltat/2*np.matmul(Minv_alpha, p_alpha)
+
+        p_lmbda = alpha_func(zeta_lmbda, deltat/2)*p_lmbda + G(sigmaA, zeta_lmbda, deltat/2)*npr.randn(J*K)
+        zeta_lmbda = zeta_lmbda + deltat/(2*nu_lmbda)*(np.linalg.norm(p_lmbda)**2 - J*K/beta)
+        q_lmbda = q_lmbda + deltat/2*np.matmul(Minv_lmbda, p_lmbda)
+
+        theta = [q_alpha, np.reshape(q_lmbda, (J,K)), c, phi, logsigmasq] 
+        _, grad_est = block_PF(Y, x_0, n_particles, theta, calc_grad=True)
+        grad_alpha, grad_lmbda = grad_est[0], (grad_est[1]).flatten()
+
+        phat_alpha = p_alpha - deltat*grad_alpha
+        q_alpha = q_alpha + deltat/2*np.matmul(Minv_alpha, phat_alpha)
+        zeta_alpha = zeta_alpha + deltat/(2*nu_alpha)*(np.linalg.norm(phat_alpha)**2 - J/beta)
+        p_alpha = alpha_func(zeta_alpha, deltat/2)*phat_alpha + G(sigmaA, zeta_alpha, deltat/2)*npr.randn(J)
+
+        phat_lmbda = p_lmbda - deltat*grad_lmbda
+        q_lmbda = q_lmbda + deltat/2*np.matmul(Minv_lmbda, phat_lmbda)
+        zeta_lmbda = zeta_lmbda + deltat/(2*nu_lmbda)*(np.linalg.norm(phat_lmbda)**2 - J*K/beta)
+        p_lmbda = alpha_func(zeta_lmbda, deltat/2)*phat_lmbda + G(sigmaA, zeta_lmbda, deltat/2)*npr.randn(J*K)
+
+        alpha_chain[n+1] = q_alpha
+        zeta_alpha_vals[n+1] = zeta_alpha
+        lmbda_chain[n+1] = q_lmbda
+        zeta_lmbda_vals[n+1] = zeta_lmbda
+        
+    return [alpha_chain, lmbda_chain], [zeta_alpha_vals, zeta_lmbda_vals]
     
     
     
+def get_corrs(lmbda_chain) :
+    N, J, K = np.shape(lmbda_chain)
+    corrs = np.zeros((N,J,J))
+    for j1 in range(J) :
+        for j2 in range(J) :
+            corrs[:,j1,j2] = np.sum(lmbda_chain[:,j1]*lmbda_chain[:,j2],axis=1)\
+                                    /(np.linalg.norm(lmbda_chain[:,j1],axis=1)*np.linalg.norm(lmbda_chain[:,j2],axis=1))
+    return corrs
+
+def plot_non_reversible(alpha_chain, lmbda_chain, burnin=100) :
+    N, J, K = np.shape(lmbda_chain)
+    plt.rcParams['figure.figsize'] = (12, 3)
+    
+    plt.subplot(121)
+    plt.plot(alpha_chain[burnin:])
+    #for j in range(J) :
+        #plt.axhline(y=alpha[j], color="k")
+    plt.grid(True)
+    plt.title(r"$\alpha$", fontsize=15)
+    
+    plt.subplot(122)
+    lmbda_chain = np.reshape(lmbda_chain, (N,J*K))
+    plt.plot(lmbda_chain[burnin:])
+    #for idx in range(J*K) :
+    #    plt.axhline(y=(lmbda.flatten())[idx], color="k")
+    plt.grid(True)
+    plt.title(r"$\lambda$", fontsize=15)
+    plt.show()
     
     
     

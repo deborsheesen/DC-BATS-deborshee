@@ -52,7 +52,7 @@ model
         {
             for (j in 1:J)
             {
-                target += pow_obs*bernoulli_logit_lpmf(y[t,i,j] | alpha[j] + dot_product(lmbda[j],X[t][i,:]));
+                target += pow_obs*bernoulli_lpmf(y[t,i,j] | Phi(alpha[j] + dot_product(lmbda[j],X[t][i,:])));
             }
         }
     }

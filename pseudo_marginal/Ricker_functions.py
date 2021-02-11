@@ -11,12 +11,14 @@ from tqdm import trange
 
 def simulate_data(initial, T, theta):
     r, sigma, phi = theta[:]
-    X = np.zeros(T+1); X[0] = initial 
+    X = np.zeros(T) 
+    X[0] = initial 
     Y = np.zeros(T)
-    for t in range(T):
-        X[t+1] = X[t]*r*np.exp(-X[t] + sigma*npr.randn())
-        Y[t] = npr.poisson(phi*X[t+1])
-    return X[1::], Y.astype(int)
+    for t in np.arange(1,T) :
+        X[t] = X[t-1]*r*np.exp(-X[t-1] + sigma*npr.randn())
+    for t in range(T) :
+        Y[t] = npr.poisson(phi*X[t])
+    return X, Y.astype(int)
 
 
 def propagate(particles, theta) :
@@ -24,33 +26,59 @@ def propagate(particles, theta) :
     n_particles = len(particles)
     return particles*r*np.exp(-particles + sigma*npr.randn(n_particles))
 
-def adaptive_resample(weights, particles) :
+def adaptive_resample(particles, weights) :
     weights /= np.sum(weights)
     ESS = 1/np.sum(weights**2)
     n_particles = len(weights)
-    idx_resampled = np.arange(n_particles)
     if ESS < n_particles/2 :
         particles = particles[npr.choice(a=n_particles,size=n_particles,p=weights)]
         weights = np.ones(n_particles)/n_particles
-    return weights, particles 
+    return particles, weights 
+
+def resample(particles, weights) :
+    n_particles = len(weights)
+    particles = particles[npr.choice(a=n_particles,size=n_particles,p=weights/np.sum(weights))]
+    weights = np.ones(n_particles)/n_particles
+    return particles, weights
 
 def potential(particles, y, theta) :
     r, sigma, phi = theta[:]
-    return np.exp(-phi*particles)*(phi*particles)**y/float(factorial(y))
+    lmbda = phi*particles
+    return np.exp(-lmbda)*lmbda**y/float(factorial(y))
     
 
 def bootstrap_PF_simple(initial, n_particles, theta, Y) :
     T = len(Y)
     r, sigma, phi = theta[:]
-    particles, weights, logNC = np.zeros(n_particles), np.ones(n_particles), 0.
+    
+    particles = np.zeros(n_particles)
+    particles[:] = initial 
+    weights = potential(particles, Y[0], theta)
+    logNC = np.log(np.sum(weights))
+    particles, weights = resample(particles, weights)
+    
+    for t in np.arange(1,T) :
+        particles = propagate(particles, theta)
+        weights *= potential(particles, Y[t], theta)
+        logNC += np.log(np.sum(weights))
+        #particles, weights = adaptive_resample(particles, weights)
+        particles, weights = resample(particles, weights)
+                
+    return logNC#, (1-(n_particles/(n_particles-1))**T*(1-1/n_particles**2))*logNC 
+
+def bootstrap_PF_multiple(initial, n_particles, theta, Y, m) :
+    T = len(Y)
+    r, sigma, phi = theta[:]
+    particles, weights, logNC = np.zeros((n_particles,m)), np.ones((n_particles,m)), np.zeros(m)
     particles[:] = initial 
     
     for t in range(T) :
-        particles = propagate(particles, theta)
-        incremental_weights = potential(particles, Y[t], theta)
-        weights = weights*incremental_weights
-        logNC += np.log(np.sum(weights))
-        weights, particles = adaptive_resample(weights, particles)
+        for i in range(m) :
+            particles[:,i] = propagate(particles[:,i], theta)
+            incremental_weights = potential(particles[:,i], Y[t], theta)
+            weights[:,i] = weights[:,i]*incremental_weights
+            logNC[i] += np.log(np.sum(weights[:,i]))
+            weights[:,i], particles[:,i] = adaptive_resample(weights[:,i], particles[:,i])
                 
     return logNC
 
@@ -63,10 +91,9 @@ def bootstrap_PF(initial, n_particles, theta, Y) :
     
     for t in range(T) :
         particles[t+1] = propagate(particles[t], theta)
-        incremental_weights = potential(particles[t+1], Y[t], theta)
-        weights = weights*incremental_weights
+        weights *= potential(particles[t+1], Y[t], theta)
         logNC += np.log(np.sum(weights))
-        weights, particles[t+1] = adaptive_resample(weights, particles[t+1])
+        particles[t+1], weights = adaptive_resample(particles[t+1], weights)
                 
     return logNC, particles, weights
 
@@ -82,7 +109,7 @@ def pMCMC(initial, Y, theta_0, n_particles, n_mcmc, scale, power=1, adapt=True, 
     theta_chain[0] = theta_0
     log_theta_mu, log_theta_m2 = np.log(theta_0), np.log(theta_0)**2
     lls = np.zeros(n_mcmc+1) 
-    lls[0] = bootstrap_PF_simple(initial, n_particles, theta_chain[0], Y)
+    lls[0], _ = bootstrap_PF_simple(initial, n_particles, theta_chain[0], Y)
     scales = np.ones((n_mcmc+1,theta_dim))
     scales[:] = scale
     accepted = 0
@@ -91,7 +118,7 @@ def pMCMC(initial, Y, theta_0, n_particles, n_mcmc, scale, power=1, adapt=True, 
     for n in trange(n_mcmc) :
         
         theta_proposed = np.exp(np.log(theta_chain[n]) + scales[n]*npr.randn(theta_dim)) 
-        ll_proposed = bootstrap_PF_simple(initial, n_particles, theta_proposed, Y)
+        ll_proposed, _ = bootstrap_PF_simple(initial, n_particles, theta_proposed, Y)
         log_prior_current, log_prior_proposed = log_prior(theta_chain[n]), log_prior(theta_proposed) 
         log_accept_prob = power*(ll_proposed-lls[n]) + (log_prior_proposed-log_prior_current) + np.log(np.prod(theta_proposed/theta_chain[n]))
         
@@ -102,7 +129,7 @@ def pMCMC(initial, Y, theta_0, n_particles, n_mcmc, scale, power=1, adapt=True, 
         else :
             lls[n+1], theta_chain[n+1] = lls[n], theta_chain[n]
             if n - last_jump > 50 :
-                lls[n+1] = bootstrap_PF_simple(initial, n_particles, theta_chain[n+1], Y)
+                lls[n+1], _ = bootstrap_PF_simple(initial, n_particles, theta_chain[n+1], Y)
                 
         log_theta_mu = ((n+1)*log_theta_mu + np.log(theta_chain[n+1]))/(n+2)
         log_theta_m2 = ((n+1)*log_theta_m2 + np.log(theta_chain[n+1])**2)/(n+2)

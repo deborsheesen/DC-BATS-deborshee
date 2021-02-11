@@ -27,11 +27,11 @@ model
     target += inv_gamma_lpdf(sigma | 3, 10);
     target += normal_lpdf(phi | 0, 10);
     
-    target += normal_lpdf(logX[1] | log(x_0)+logr-x_0, sigma);
+    target += power*normal_lpdf(logX[1] | log(x_0)+logr-x_0, sigma);
     
     for (t in 2:T) 
     {
-        target += normal_lpdf(logX[t] | log(X[t-1])+logr-X[t-1], sigma);
+        target += power*normal_lpdf(logX[t] | log(X[t-1])+logr-X[t-1], sigma);
     }
     
     for (t in 1:T)
