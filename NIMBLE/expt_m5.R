@@ -29,7 +29,7 @@ stateSpaceMCMC = buildMCMC(stateSpaceMCMCconf)
 compiledList_m5 = compileNimble(stateSpaceModel, stateSpaceMCMC, resetFunctions=TRUE)
 
 ## run compiled sampler for 10000 iterations
-compiledList_m5$stateSpaceMCMC$run(1000)
+compiledList_m5$stateSpaceMCMC$run(10000)
 
 ## create trace plots for each parameter
 par(mfrow=c(2,2))

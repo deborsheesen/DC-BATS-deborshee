@@ -4,6 +4,7 @@ import numpy as np, numpy.random as npr, copy, matplotlib.pyplot as plt, multipr
 from scipy.stats import *
 from tqdm import trange
 from pylab import plot, show, legend
+from time import time
 
 def generate_data_linear_gaussian(mu0, Sigma0, A, C, Q, R, T) :
     npr.seed()
@@ -125,7 +126,7 @@ def bootstrap_PF_mult(Y, A, C, sigmax2, sigmay2, mu0, Sigma0, n_particles, m) :
 
 
 def adaptive_MH(Y, A, C, sigmax2, sigmay2, mu0, Sigma0, n_mcmc, scale, 
-                method="kalman", n_particles=100, adapt=True, start_adapt=0.2, power=1) :
+                method="kalman", n_particles=100, adapt=True, start_adapt=0.2, power=1, kappa=1) :
     
     npr.seed()
     scipy.random.seed()
@@ -145,24 +146,31 @@ def adaptive_MH(Y, A, C, sigmax2, sigmay2, mu0, Sigma0, n_mcmc, scale,
     log_sigmay2_mu = log_sigmay2_chain[0]
     log_sigmay2_m2 = log_sigmay2_chain[0]**2
     
-    lls = np.zeros((n_mcmc+1,power)) 
+    #lls = np.zeros((n_mcmc+1,power))
+    lls = np.zeros(n_mcmc+1)
     
+    start = time()
     if method == "kalman" :
         lls[0] = log_likelihood(Y, A, C, sigmax2, sigmay2, mu0, Sigma0)
     elif method == "particle" :
-        lls[0] = bootstrap_PF_mult(Y, A, C, sigmax2, sigmay2, mu0, Sigma0, n_particles, power)
+        #lls[0] = bootstrap_PF_mult(Y, A, C, sigmax2, sigmay2, mu0, Sigma0, n_particles, power)
+        lls[0] = bootstrap_PF(Y, A, C, sigmax2, sigmay2, mu0, Sigma0, n_particles)[0]
     
-    for n in trange(n_mcmc) :
+    for n in range(n_mcmc) :
         log_sigmax2_proposed = log_sigmax2_chain[n] + scales[n,0]*npr.randn()
         log_sigmay2_proposed = log_sigmay2_chain[n] + scales[n,1]*npr.randn()
         
         if method == "kalman" :
             ll_proposed = log_likelihood(Y, A, C, np.exp(log_sigmax2_proposed), np.exp(log_sigmay2_proposed), mu0, Sigma0)
-            log_accept_ratio = power*(ll_proposed - ll_current)
+            #log_accept_ratio = power*ll_proposed - np.sum(lls[n])
+            log_accept_ratio = power*(ll_proposed - lls[n])
         elif method == "particle" :
-            ll_proposed = bootstrap_PF_mult(Y, A, C, np.exp(log_sigmax2_proposed), np.exp(log_sigmay2_proposed), 
-                                            mu0, Sigma0, n_particles, power)
-            log_accept_ratio = np.sum(ll_proposed) - np.sum(lls[n])
+            #ll_proposed = bootstrap_PF_mult(Y, A, C, np.exp(log_sigmax2_proposed), np.exp(log_sigmay2_proposed), 
+            #                                mu0, Sigma0, n_particles, power)
+            ll_proposed = bootstrap_PF(Y, A, C, np.exp(log_sigmax2_proposed), np.exp(log_sigmay2_proposed), 
+                                       mu0, Sigma0, n_particles)[0]
+            #log_accept_ratio = np.sum(ll_proposed) - np.sum(lls[n])
+            log_accept_ratio = power*(ll_proposed - lls[n])
         
         log_accept_ratio += norm.logpdf(x=log_sigmax2_proposed, loc=0, scale=10) - \
                             norm.logpdf(x=log_sigmax2_chain[n], loc=0, scale=10) + \
@@ -182,18 +190,23 @@ def adaptive_MH(Y, A, C, sigmax2, sigmay2, mu0, Sigma0, n_mcmc, scale,
             lls[n+1] = lls[n]
         
         if (method == "particle") & (n - last_accepted > 50) :
-            lls[n+1] = bootstrap_PF_mult(Y, A, C, np.exp(log_sigmax2_chain[n+1]), np.exp(log_sigmay2_chain[n+1]), 
-                                           mu0, Sigma0, n_particles, power)
+            #lls[n+1] = bootstrap_PF_mult(Y, A, C, np.exp(log_sigmax2_chain[n+1]), np.exp(log_sigmay2_chain[n+1]), 
+            #                             mu0, Sigma0, n_particles, power)
+            lls[n+1] = bootstrap_PF(Y, A, C, np.exp(log_sigmax2_chain[n+1]), np.exp(log_sigmay2_chain[n+1]), 
+                                       mu0, Sigma0, n_particles)[0]
             
         log_sigmax2_mu = ((n+1)*log_sigmax2_mu + log_sigmax2_chain[n+1])/(n+2)    
         log_sigmax2_m2 = ((n+1)*log_sigmax2_m2 + log_sigmax2_chain[n+1]**2)/(n+2)
         log_sigmay2_mu = ((n+1)*log_sigmay2_mu + log_sigmay2_chain[n+1])/(n+2)    
         log_sigmay2_m2 = ((n+1)*log_sigmay2_m2 + log_sigmay2_chain[n+1]**2)/(n+2)
         
+        if (n+1)%(n_mcmc/10) == 0 :
+            print((n+1)/n_mcmc*100, "% run in", round((time()-start)/60, 1), "mins")
+        
         if adapt :
             if n >= int(n_mcmc*start_adapt) : 
-                scales[n+1,0] = np.sqrt((log_sigmax2_m2 - log_sigmax2_mu**2))
-                scales[n+1,1] = np.sqrt((log_sigmay2_m2 - log_sigmay2_mu**2))
+                scales[n+1,0] = kappa*np.sqrt((log_sigmax2_m2 - log_sigmax2_mu**2))
+                scales[n+1,1] = kappa*np.sqrt((log_sigmay2_m2 - log_sigmay2_mu**2))
     
     print(100*accepted/n_mcmc, "% acceptance rate")
     return log_sigmay2_chain, log_sigmax2_chain, accepted, scales
