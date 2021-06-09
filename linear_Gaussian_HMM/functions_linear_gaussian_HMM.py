@@ -156,7 +156,7 @@ def adaptive_MH(Y, A, C, sigmax2, sigmay2, mu0, Sigma0, n_mcmc, scale,
         #lls[0] = bootstrap_PF_mult(Y, A, C, sigmax2, sigmay2, mu0, Sigma0, n_particles, power)
         lls[0] = bootstrap_PF(Y, A, C, sigmax2, sigmay2, mu0, Sigma0, n_particles)[0]
     
-    for n in range(n_mcmc) :
+    for n in trange(n_mcmc) :
         log_sigmax2_proposed = log_sigmax2_chain[n] + scales[n,0]*npr.randn()
         log_sigmay2_proposed = log_sigmay2_chain[n] + scales[n,1]*npr.randn()
         
@@ -200,8 +200,9 @@ def adaptive_MH(Y, A, C, sigmax2, sigmay2, mu0, Sigma0, n_mcmc, scale,
         log_sigmay2_mu = ((n+1)*log_sigmay2_mu + log_sigmay2_chain[n+1])/(n+2)    
         log_sigmay2_m2 = ((n+1)*log_sigmay2_m2 + log_sigmay2_chain[n+1]**2)/(n+2)
         
-        if (n+1)%(n_mcmc/10) == 0 :
-            print((n+1)/n_mcmc*100, "% run in", round((time()-start)/60, 1), "mins")
+        #if (n+1)%(n_mcmc/10) == 0 :
+        #    print((n+1)/n_mcmc*100, "% run in", round((time()-start)/60, 1), 
+        #          "mins; acceptance rate =", np.round(accepted/(n+1),2))
         
         if adapt :
             if n >= int(n_mcmc*start_adapt) : 
