@@ -55,7 +55,7 @@ def log_likelihood(Y, Z, A, C, B, sigmax2, sigmay2, mu0, Sigma0) :
 
 
 def adaptive_MH(Y, Z, A, C, B, sigmax2, sigmay2, mu0, Sigma0, n_mcmc, scale, scale_A, scale_C, scale_B,
-                n_particles=100, adapt=True, start_adapt=0.2, power=1, kappa=1) :
+                adapt=True, start_adapt=0.2, power=1, kappa=1) :
     
     npr.seed()
     scipy.random.seed()
@@ -154,7 +154,7 @@ def adaptive_MH(Y, Z, A, C, B, sigmax2, sigmay2, mu0, Sigma0, n_mcmc, scale, sca
                 scales_B[n+1] = kappa*np.sqrt((B_m2 - B_mu**2))
     
     print(100*accepted/n_mcmc, "% acceptance rate")
-    return log_sigmay2_chain, log_sigmax2_chain, A_chain, C_chain, B_chain, accepted, scales
+    return log_sigmay2_chain, log_sigmax2_chain, A_chain, C_chain, B_chain, accepted
 
 
 def plot_chains(log_sigmay2, log_sigmax2, A_chain, C_chain, B_chain) :
