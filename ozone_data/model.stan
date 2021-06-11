@@ -119,12 +119,38 @@ data
 
 parameters 
 {
+    //real<lower=0> z1;
+    //vector[p-1] z2;
+    //matrix[m-1,p] Z3;
     matrix[m,p] Z;
-    matrix<lower=-1,upper=1>[m,m] TT;
+    matrix<lower=0,upper=1>[m,m] T;
     cov_matrix[p] H;
     matrix[p,s] B;
-    vector[m] mu0;
-    cov_matrix[m] Sigma0;
+    //vector[m] mu0;
+    //cov_matrix[m] Sigma0;
+}
+
+//transformed parameters 
+//{
+//    matrix[m,p] Z;
+//    Z[1,1] = z1;
+//    for (j in 2:p)
+//    {
+//        Z[1,j] = z2[j-1];
+//    }
+//    for (i in 2:m)
+//    {
+//        Z[i] = Z3[i-1];
+//    }
+//}
+
+transformed parameters 
+{
+    matrix[m,m] Ttr;
+    for (i in 1:m) 
+    {
+        Ttr[i] = 2*T[i] - 1; 
+    }
 }
 
 model 
@@ -132,15 +158,38 @@ model
     vector[p] d[n];
     matrix[m,m] R;
     matrix[m,m] Q;
+    
+    vector[m] mu0;
+    matrix[m,m] Sigma0;
+    
     R = diag_matrix(rep_vector(1,m));
     Q = diag_matrix(rep_vector(1,m));
+    
+    mu0 = rep_vector(0,m);
+    Sigma0 = diag_matrix(rep_vector(1,m));
     
     for (t in 1:n) 
     {
         d[t] = B*covariate[t];
     }
     
-    target += power*ssm_lpdf(y | d, Z, H, c, TT, R, Q, mu0, Sigma0);
+    // priors
+    for (i in 1:m)
+    {
+        target += normal_lpdf(Z[i] | 0, 100); 
+        //target += uniform_lpdf(T[i] | -1, 1); 
+        target += beta_lpdf(T[i] | 8, 8);
+    }
+    //target += normal_lpdf(mu0 | 0, 100); 
+    for (i in 1:p) 
+    {
+        target += normal_lpdf(B[i] | 0, 100); 
+    }
+    target += wishart_lpdf(H | p, diag_matrix(rep_vector(1,p)));
+    //target += wishart_lpdf(Sigma0 | m+1, diag_matrix(rep_vector(1,m)));
+    
+    // likelihood
+    target += power*ssm_lpdf(y | d, Z, H, c, Ttr, R, Q, mu0, Sigma0);
 }
 
 
