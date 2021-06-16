@@ -59,7 +59,7 @@ functions
     }
 
 
-    real ssm_lpdf(vector[] y, vector[] d, matrix Z, matrix H,
+    real ssm_lpdf(vector[] y, vector d, matrix Z, matrix[] H,
                    vector c, matrix T, matrix R, matrix Q,
                    vector a1, matrix P1) 
     {
@@ -88,8 +88,8 @@ functions
             for (t in 1:n) 
             {
                 RQR = quad_form(Q, R);
-                v = ssm_filter_update_v(y[t], a, d[t], Z);
-                Finv = ssm_filter_update_Finv(P, Z, H);
+                v = ssm_filter_update_v(y[t], a, d, Z);
+                Finv = ssm_filter_update_Finv(P, Z, H[t]);
                 K = ssm_filter_update_K(P, Z, T, Finv);
                 ll_obs[t] = ssm_filter_update_ll(v, Finv);
                 // don't save a, P for last iteration
@@ -114,35 +114,16 @@ data
     vector[p] y[n];
     vector[s] covariate[n];
     real<lower=0> power;
-    vector[m] c;
 }
 
 parameters 
 {
-    //real<lower=0> z1;
-    //vector[p-1] z2;
-    //matrix[m-1,p] Z3;
     matrix[m,p] Z;
     matrix<lower=0,upper=1>[m,m] T;
-    cov_matrix[p] H;
+    vector<lower=0>[p] Psi;
     matrix[p,s] B;
-    //vector[m] mu0;
-    //cov_matrix[m] Sigma0;
 }
 
-//transformed parameters 
-//{
-//    matrix[m,p] Z;
-//    Z[1,1] = z1;
-//    for (j in 2:p)
-//    {
-//        Z[1,j] = z2[j-1];
-//    }
-//    for (i in 2:m)
-//    {
-//        Z[i] = Z3[i-1];
-//    }
-//}
 
 transformed parameters 
 {
@@ -155,38 +136,39 @@ transformed parameters
 
 model 
 {
-    vector[p] d[n];
+    vector[m] c;
+    vector[p] d;
     matrix[m,m] R;
     matrix[m,m] Q;
+    matrix[p,p] H[n];
     
     vector[m] mu0;
     matrix[m,m] Sigma0;
     
     R = diag_matrix(rep_vector(1,m));
     Q = diag_matrix(rep_vector(1,m));
+    c = rep_vector(1,m);
+    d = rep_vector(1,p);
     
     mu0 = rep_vector(0,m);
     Sigma0 = diag_matrix(rep_vector(1,m));
     
     for (t in 1:n) 
     {
-        d[t] = B*covariate[t];
+        H[t] = diag_matrix(Psi) + B * covariate[t] * covariate[t]' * B';
     }
     
     // priors
     for (i in 1:m)
     {
         target += normal_lpdf(Z[i] | 0, 100); 
-        //target += uniform_lpdf(T[i] | -1, 1); 
         target += beta_lpdf(T[i] | 8, 8);
     }
-    //target += normal_lpdf(mu0 | 0, 100); 
     for (i in 1:p) 
     {
         target += normal_lpdf(B[i] | 0, 100); 
     }
-    target += wishart_lpdf(H | p, diag_matrix(rep_vector(1,p)));
-    //target += wishart_lpdf(Sigma0 | m+1, diag_matrix(rep_vector(1,m)));
+    target += inv_gamma_lpdf(Psi | 3, 10);
     
     // likelihood
     target += power*ssm_lpdf(y | d, Z, H, c, Ttr, R, Q, mu0, Sigma0);
